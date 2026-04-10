@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# yallama: A llama.cpp installation and model management helper.
+# yallama: Ollama-shaped llama.cpp and model management helper
 # https://github.com/mmonteleone/yallama
 
 # MIT License

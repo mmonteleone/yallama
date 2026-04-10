@@ -1,13 +1,13 @@
-# yallama
+# Yallama
 
 Run local models with the ease of [Ollama](https://ollama.com) and the power of official [llama.cpp](https://github.com/ggml-org/llama.cpp) releases with full [Hugging Face GGUF](https://huggingface.co/models?library=gguf&sort=trending) model access.
 
-`yallama` is a single Bash script that installs official llama.cpp releases, uses the standard Hugging Face cache, and wraps a thin CLI to simulate common Ollama-style flows for interacting with models: *pull*, *run*, *serve*, *list*, *remove*, *update*, etc.
+Yallama is a single Bash script that installs official llama.cpp releases, uses the standard Hugging Face cache, and wraps a thin CLI to simulate common Ollama-style flows for interacting with models: *pull*, *run*, *serve*, *list*, *remove*, *update*, etc.
 
 ## Why use it?
 
-- Same ergonomics as Ollama for lazy people like me, including ease of running *and* managing local models
 - Upstream, official, llama.cpp with all its perf benefits and model support (*ahem*, [Gemma 4](https://deepmind.google/models/gemma/gemma-4/)) vs downstream integrations and forks
+- Same ergonomics as Ollama for lazy people like me, including ease of running *and* managing local models
 - Broad Hugging Face model registry, not easily reached through Ollama
 - Built-in chat UI and OpenAI API endpoint compatibility thanks to `llama-server`
 - Command and model shell completions for fish, zsh, and bash
@@ -147,4 +147,4 @@ MIT License
 
 Copyright (c) 2026 Michael Monteleone
 
-`yallama` is an independent project and is not affiliated with or associated with [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp), or [Hugging Face](https://huggingface.co).
+Yallama is an independent project and is not affiliated with or associated with [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp), or [Hugging Face](https://huggingface.co).
