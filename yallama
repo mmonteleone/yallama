@@ -625,11 +625,12 @@ cmd_status() {
 
 cmd_uninstall_usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME uninstall [--path <installation_root>] [--delete-hf-cache] [--force]
+Usage: $SCRIPT_NAME uninstall [--path <installation_root>] [--delete-hf-cache] [--self] [--force]
 
 Options:
   --path <dir>          Installation root. Defaults to ~/.llama.cpp.
   --delete-hf-cache    Also delete cached model directories under ~/.cache/huggingface/hub.
+  --self               Also delete the yallama script itself.
   --force              Skip confirmation prompts.
 EOF
 }
@@ -660,6 +661,7 @@ delete_hf_model_cache_dirs() {
 cmd_uninstall() {
   local INSTALL_ROOT="$DEFAULT_INSTALL_ROOT"
   local DELETE_HF_CACHE="false"
+  local DELETE_SELF="false"
   local FORCE="false"
 
   while [[ $# -gt 0 ]]; do
@@ -671,6 +673,7 @@ cmd_uninstall() {
         DELETE_HF_CACHE="true"
         shift
         ;;
+      --self)             DELETE_SELF="true"; shift ;;
       --force)            FORCE="true"; shift ;;
       -h|--help)          cmd_uninstall_usage; return 0 ;;
       *)                  echo "Unknown argument: $1" >&2; cmd_uninstall_usage >&2; return 1 ;;
@@ -692,6 +695,19 @@ cmd_uninstall() {
   if [[ "$DELETE_HF_CACHE" == "true" ]]; then
     confirm_destructive_action "removing cached HuggingFace model directories under ${HF_HUB_DIR}" "$FORCE" || return 1
     delete_hf_model_cache_dirs
+  fi
+
+  if [[ "$DELETE_SELF" == "true" ]]; then
+    local self_path
+    self_path="$(command -v "$SCRIPT_NAME" 2>/dev/null || true)"
+    if [[ -z "$self_path" ]]; then
+      echo "Could not locate $SCRIPT_NAME on PATH; skipping self-removal."
+    else
+      confirm_destructive_action "removing $SCRIPT_NAME at ${self_path}" "$FORCE" || return 1
+      echo "Removing $SCRIPT_NAME at: $self_path"
+      rm -f "$self_path"
+      echo "Done."
+    fi
   fi
 }
 
@@ -1238,6 +1254,7 @@ complete -c $sn -n "__fish_seen_subcommand_from status"      -l check-update    
 complete -c $sn -n "__fish_seen_subcommand_from install update" -l shell-profile   -d 'Allow shell profile edits'
 complete -c $sn -n "__fish_seen_subcommand_from install update" -l no-shell-profile -d 'Skip shell profile edits'
 complete -c $sn -n "__fish_seen_subcommand_from uninstall"   -l delete-hf-cache  -d 'Delete cached HF model dirs'
+complete -c $sn -n "__fish_seen_subcommand_from uninstall"   -l self             -d 'Also delete the yallama script itself'
 complete -c $sn -n "__fish_seen_subcommand_from uninstall remove rm prune" -l force    -d 'Skip confirmation prompt'
 complete -c $sn -n "__fish_seen_subcommand_from list ls"     -l quiet            -d 'Only print names'
 complete -c $sn -n "__fish_seen_subcommand_from list ls"     -l json             -d 'JSON output'
@@ -1318,6 +1335,7 @@ _yallama() {
           _arguments \
             '--path[Installation root]:dir:_files -/' \
             '--delete-hf-cache[Delete cached HF model dirs]' \
+            '--self[Also delete the yallama script itself]' \
             '--force[Skip confirmation prompt]' ;;
         status)
           _arguments \
@@ -1374,7 +1392,7 @@ _${sn//-/_}_completions() {
   case "\$cmd" in
     install)  COMPREPLY=(\$(compgen -W "--tag --path --arch --shell-profile --no-shell-profile --print-latest-tag" -- "\$cur")) ;;
     update)   COMPREPLY=(\$(compgen -W "--path --arch --shell-profile --no-shell-profile" -- "\$cur")) ;;
-    uninstall) COMPREPLY=(\$(compgen -W "--path --delete-hf-cache --force" -- "\$cur")) ;;
+    uninstall) COMPREPLY=(\$(compgen -W "--path --delete-hf-cache --self --force" -- "\$cur")) ;;
     status)   COMPREPLY=(\$(compgen -W "--path --check-update" -- "\$cur")) ;;
     list|ls)  COMPREPLY=(\$(compgen -W "--quiet --json" -- "\$cur")) ;;
     pull|run|serve)

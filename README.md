@@ -20,11 +20,16 @@ Not really.
 
 ## Install
 
-Copy the script somewhere:
+System-wide:
 
 ```sh
-cp yallama /usr/local/bin/yallama
-chmod +x /usr/local/bin/yallama
+sudo curl -fsSL https://raw.githubusercontent.com/mmonteleone/yallama/refs/heads/main/yallama -o /usr/local/bin/yallama && sudo chmod +x /usr/local/bin/yallama
+```
+
+User-local (no `sudo`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mmonteleone/yallama/refs/heads/main/yallama -o ~/.local/bin/yallama && chmod +x ~/.local/bin/yallama
 ```
 
 Then install llama.cpp:
@@ -104,6 +109,22 @@ export YALLAMA_INSTALL_ROOT=/opt/llama.cpp
 ```sh
 export HF_TOKEN=hf_your_token_here
 ```
+
+## Uninstall
+
+Remove llama.cpp and the yallama script itself:
+
+```sh
+yallama uninstall --self
+```
+
+To also wipe all downloaded models from the Hugging Face cache:
+
+```sh
+yallama uninstall --self --delete-hf-cache
+```
+
+Both steps prompt for confirmation. Add `--force` to skip prompts.
 
 ## Compatibility
 
