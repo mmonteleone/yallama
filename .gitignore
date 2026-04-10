@@ -1,0 +1,11 @@
+.DS_Store
+
+# Editor directories and swap files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local scratch output
+*.log
+tmp/
