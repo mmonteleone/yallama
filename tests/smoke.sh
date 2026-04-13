@@ -461,7 +461,9 @@ test_remove_model_force() {
   local model_name='demo/test-model'
   local cache_dir="${HOME}/.cache/huggingface/hub/models--demo--test-model"
 
-  mkdir -p "$cache_dir"
+  # Create two quant fixtures so the listing is exercised.
+  create_gguf_fixture "models--demo--test-model" "test-model-Q4_K_M.gguf" 1024
+  create_gguf_fixture "models--demo--test-model" "test-model-Q8_0.gguf" 2048
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove "$model_name" --force
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -474,7 +476,19 @@ test_remove_model_force() {
     return
   fi
 
+  local out; out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'demo/test-model:Q4_K_M'; then
+    fail 'remove lists quant variants before deleting' "expected quant listing to include Q4_K_M, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'demo/test-model:Q8_0'; then
+    fail 'remove lists quant variants before deleting' "expected quant listing to include Q8_0, got: $out"
+    return
+  fi
+
   pass 'remove deletes cached model'
+  pass 'remove lists quant variants before deleting'
 }
 
 test_run_and_serve_forwarding() {
@@ -534,6 +548,186 @@ EOF
   pass 'serve forwards jinja and extra args'
 }
 
+# ── quant-aware tests ─────────────────────────────────────────────────────────
+
+# Helper: create a fake GGUF file in the HF cache with a symlinked blob.
+create_gguf_fixture() {
+  local model_dir_name="$1"  # e.g., "models--demo--test-GGUF"
+  local gguf_filename="$2"   # e.g., "test-Q4_K_M.gguf"
+  local blob_size="${3:-1024}"
+
+  local hf_hub_dir="${HOME}/.cache/huggingface/hub"
+  local cache_dir="${hf_hub_dir}/${model_dir_name}"
+  local blob_dir="${cache_dir}/blobs"
+  local snapshot_dir="${cache_dir}/snapshots/abc123"
+
+  mkdir -p "$blob_dir" "$snapshot_dir"
+
+  # Create a fake blob with deterministic name.
+  local blob_hash
+  blob_hash="sha256-$(printf '%s' "$gguf_filename" | shasum -a 256 | cut -d' ' -f1)"
+  dd if=/dev/zero of="${blob_dir}/${blob_hash}" bs=1 count="$blob_size" 2>/dev/null
+
+  # Create a symlink in the snapshot pointing to the blob.
+  ln -sf "../../blobs/${blob_hash}" "${snapshot_dir}/${gguf_filename}"
+}
+
+test_list_shows_quant_variants() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--demo--test-GGUF" "test-Q4_K_M.gguf" 2048
+  create_gguf_fixture "models--demo--test-GGUF" "test-Q8_0.gguf" 4096
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list shows quant variants' "list failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'demo/test-GGUF:Q4_K_M'; then
+    fail 'list shows quant variants' "expected output to contain 'demo/test-GGUF:Q4_K_M', got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'demo/test-GGUF:Q8_0'; then
+    fail 'list shows quant variants' "expected output to contain 'demo/test-GGUF:Q8_0', got: $out"
+    return
+  fi
+
+  pass 'list shows quant variants'
+}
+
+test_list_json_includes_quant() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--demo--test-GGUF" "test-UD-Q6_K.gguf" 1024
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --json
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list --json includes quant field' "list --json failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local quant_val
+  quant_val="$(jq -r '.[0].quant' "$stdout_file")"
+  if [[ "$quant_val" != "UD-Q6_K" ]]; then
+    fail 'list --json includes quant field' "expected quant 'UD-Q6_K', got '$quant_val'"
+    return
+  fi
+
+  pass 'list --json includes quant field'
+}
+
+test_list_quiet_includes_quant() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--demo--test-GGUF" "test-Q4_K_M.gguf" 1024
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --quiet
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list --quiet shows model:quant' "list --quiet failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_eq "$out" 'demo/test-GGUF:Q4_K_M'; then
+    fail 'list --quiet shows model:quant' "expected 'demo/test-GGUF:Q4_K_M', got '$out'"
+    return
+  fi
+
+  pass 'list --quiet shows model:quant'
+}
+
+test_remove_specific_quant() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--demo--test-GGUF" "test-Q4_K_M.gguf" 1024
+  create_gguf_fixture "models--demo--test-GGUF" "test-Q8_0.gguf" 2048
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove 'demo/test-GGUF:Q4_K_M' --force
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'remove specific quant' "remove failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local hf_hub_dir="${HOME}/.cache/huggingface/hub"
+  local cache_dir="${hf_hub_dir}/models--demo--test-GGUF"
+
+  # The Q4_K_M gguf should be gone.
+  if ls "$cache_dir"/snapshots/*/test-Q4_K_M.gguf >/dev/null 2>&1; then
+    fail 'remove specific quant' 'expected Q4_K_M gguf to be deleted'
+    return
+  fi
+
+  # The Q8_0 gguf should still exist.
+  if ! ls "$cache_dir"/snapshots/*/test-Q8_0.gguf >/dev/null 2>&1; then
+    fail 'remove specific quant' 'expected Q8_0 gguf to still exist'
+    return
+  fi
+
+  # The model cache directory should still exist.
+  if [[ ! -d "$cache_dir" ]]; then
+    fail 'remove specific quant' 'expected model cache dir to still exist'
+    return
+  fi
+
+  pass 'remove specific quant'
+}
+
+test_remove_last_quant_cleans_dir() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--demo--single-GGUF" "single-Q4_K_M.gguf" 1024
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove 'demo/single-GGUF:Q4_K_M' --force
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'remove last quant cleans model dir' "remove failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local hf_hub_dir="${HOME}/.cache/huggingface/hub"
+  if [[ -d "${hf_hub_dir}/models--demo--single-GGUF" ]]; then
+    fail 'remove last quant cleans model dir' 'expected model dir to be cleaned up when last quant removed'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" 'No remaining quants'; then
+    fail 'remove last quant cleans model dir' 'expected message about no remaining quants'
+    return
+  fi
+
+  pass 'remove last quant cleans model dir'
+}
+
+test_remove_missing_quant_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--demo--test-GGUF" "test-Q4_K_M.gguf" 1024
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove 'demo/test-GGUF:Q8_0' --force
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'remove missing quant errors' 'expected remove of non-existent quant to fail'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" "no cached files matching quant"; then
+    fail 'remove missing quant errors' "expected error about missing quant, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'remove missing quant errors'
+}
+
 main() {
   command -v jq >/dev/null 2>&1 || {
     echo 'jq is required to run smoke tests.' >&2
@@ -564,6 +758,24 @@ main() {
 
   setup_test_env
   test_run_and_serve_forwarding
+
+  setup_test_env
+  test_list_shows_quant_variants
+
+  setup_test_env
+  test_list_json_includes_quant
+
+  setup_test_env
+  test_list_quiet_includes_quant
+
+  setup_test_env
+  test_remove_specific_quant
+
+  setup_test_env
+  test_remove_last_quant_cleans_dir
+
+  setup_test_env
+  test_remove_missing_quant_errors
 
   printf '\n'
   printf 'Passed: %s\n' "$PASS_COUNT"

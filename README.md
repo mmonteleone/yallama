@@ -10,7 +10,7 @@ Yallama is a single Bash script that installs official llama.cpp releases, uses 
 - Same ergonomics as Ollama for lazy people like me, including ease of running *and* managing local models
 - Broad Hugging Face model registry, not easily reached through Ollama
 - Built-in chat UI and OpenAI API endpoint compatibility thanks to `llama-server`
-- Command and model shell completions for fish, zsh, and bash
+- Command, model, and quant shell completions for fish, zsh, and bash
 - No always-on daemon
 - Standard HF cache, so downloaded models are visible to other tools
 
@@ -47,11 +47,21 @@ yallama run unsloth/gemma-4-26B-A4B-it-GGUF
 # Serve the same model as an OpenAI-compatible API + web UI at http://localhost:8080
 yallama serve unsloth/gemma-4-26B-A4B-it-GGUF
 
-# List cached models
+# List downloaded models (and their variants)
 yallama list
 
 # Remove a model
 yallama remove unsloth/gemma-4-26B-A4B-it-GGUF
+```
+
+Or specify quants
+
+```sh
+# Chat with a specific quant variant
+yallama run unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K
+
+# Remove only a specific quant variant
+yallama rm unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K
 ```
 
 Pass extra llama.cpp flags after `--`:
@@ -66,11 +76,11 @@ yallama serve unsloth/gemma-4-26B-A4B-it-GGUF -- --port 8081
 | Command | What it does |
 |---|---|
 | `install` | Install llama.cpp |
-| `run <MODEL>` | Download model if needed, start chat via `llama-cli` |
-| `serve <MODEL>` | Download model if needed, start chat and API server via `llama-server` |
-| `pull <MODEL>` | Download a model without running it |
-| `list` / `ls` | List downloaded models |
-| `remove <MODEL>` / `rm <MODEL>` | Delete a model |
+| `run <MODEL[:QUANT]>` | Download model if needed, start chat via `llama-cli` |
+| `serve <MODEL[:QUANT]>` | Download model if needed, start chat and API server via `llama-server` |
+| `pull <MODEL[:QUANT]>` | Download a model (or specific quant) without running it |
+| `list` / `ls` | List downloaded models, including per-quant rows for GGUF variants |
+| `remove <MODEL[:QUANT]>` / `rm <MODEL[:QUANT]>` | Delete an entire model or just one quant variant |
 | `status` | Show installed version and optionally check for updates |
 | `update` | Update llama.cpp to the latest release |
 | `versions` | List installed llama.cpp versions |
@@ -89,10 +99,21 @@ yallama run --help
 
 ## Model names
 
-Use the normal Hugging Face `USER/MODEL` format, for example:
+Use the normal Hugging Face `USER/MODEL` format, with optional `:QUANT`, for example:
 
 - `unsloth/gemma-4-26B-A4B-it-GGUF`
+- `unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K`
 - `unsloth/Qwen3.5-35B-A3B-GGUF`
+
+When you include `:QUANT`, yallama passes that through to llama.cpp model selection and treats it as a separate variant for `run`, `serve`, `list` and `remove`.
+
+```sh
+yallama list
+yallama ls --quiet
+yallama ls --json
+```
+
+`yallama remove USER/MODEL:QUANT` removes only that quant variant. Omitting `:QUANT` removes the whole model.
 
 Models are stored in the standard Hugging Face cache under `~/.cache/huggingface/hub/`.
 

@@ -31,7 +31,7 @@ SCRIPT_NAME="$(basename "$0")"
 DEFAULT_INSTALL_ROOT="${HOME}/.llama.cpp"
 HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
 SHELL_PROFILE_EDIT_DECISION=""
-YALLAMA_VERSION="0.1.0"
+YALLAMA_VERSION="0.1.1"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -158,6 +158,115 @@ ensure_llama_in_path() {
   fi
 }
 
+# ── quant helpers ─────────────────────────────────────────────────────────────
+
+# Parse "user/model[:quant]" into REPLY_MODEL and REPLY_QUANT globals.
+_parse_model_spec() {
+  local spec="$1"
+  REPLY_MODEL="${spec%%:*}"
+  if [[ "$spec" == *:* ]]; then
+    REPLY_QUANT="${spec#*:}"
+  else
+    REPLY_QUANT=""
+  fi
+}
+
+# Extract a quant tag from a GGUF filename for display and matching.
+# e.g., "gemma-4-26B-A4B-it-UD-Q6_K.gguf" -> "UD-Q6_K"
+# Falls back to the full basename (minus .gguf) if no known pattern matches.
+extract_quant_from_filename() {
+  local filename="$1"
+  local base="${filename%.gguf}"
+  # Strip split-file suffix (e.g., -00001-of-00003)
+  base="${base%-[0-9][0-9][0-9][0-9][0-9]-of-[0-9][0-9][0-9][0-9][0-9]}"
+  # Match common GGUF quant patterns at the end of the basename.
+  # Handles: Q4_K_M, UD-Q6_K, IQ4_XS, F16, BF16, F32, etc.
+  # Optional 2-letter prefix group (e.g. UD-, SD-) before the main quant type.
+  if [[ "$base" =~ [-._](([A-Z][A-Z][-_])?(I?Q[0-9]+(_[A-Z0-9]+)*|F16|BF16|F32))$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  else
+    printf '%s\n' "$base"
+  fi
+}
+
+# Find cached GGUF files in a model's HF cache snapshots directory.
+# Prints one basename per line, deduplicated and sorted.
+_find_cached_gguf_files() {
+  local cache_dir="$1"
+  local snapshot_dir
+  for snapshot_dir in "$cache_dir"/snapshots/*/; do
+    [[ -d "$snapshot_dir" ]] || continue
+    local f
+    for f in "$snapshot_dir"*.gguf; do
+      [[ -f "$f" || -L "$f" ]] || continue
+      basename "$f"
+    done
+  done | sort -u
+}
+
+# Find cached GGUF filenames whose extracted quant tag matches the given tag.
+# Prints matching basenames, one per line.
+_find_gguf_by_quant() {
+  local cache_dir="$1"
+  local quant="$2"
+  _find_cached_gguf_files "$cache_dir" | while IFS= read -r fname; do
+    [[ -z "$fname" ]] && continue
+    local tag
+    tag="$(extract_quant_from_filename "$fname")"
+    if [[ "$tag" == "$quant" ]]; then
+      printf '%s\n' "$fname"
+    fi
+  done
+}
+
+# Resolve a symlink to its absolute target path (follows one level).
+_resolve_link() {
+  local path="$1"
+  if [[ -L "$path" ]]; then
+    local dir target
+    dir="$(dirname "$path")"
+    target="$(readlink "$path")"
+    if [[ "$target" != /* ]]; then
+      target="${dir}/${target}"
+    fi
+    (cd "$(dirname "$target")" 2>/dev/null && printf '%s/%s' "$PWD" "$(basename "$target")")
+  else
+    printf '%s' "$path"
+  fi
+}
+
+# Remove GGUF files (symlinks + backing blobs) matching a quant tag from the cache.
+# Returns 0 if at least one file was removed, 1 otherwise.
+_remove_quant_files() {
+  local cache_dir="$1"
+  local quant="$2"
+  local removed=0
+  local snapshot_dir
+  for snapshot_dir in "$cache_dir"/snapshots/*/; do
+    [[ -d "$snapshot_dir" ]] || continue
+    local f
+    for f in "$snapshot_dir"*.gguf; do
+      [[ -f "$f" || -L "$f" ]] || continue
+      local fname tag
+      fname="$(basename "$f")"
+      tag="$(extract_quant_from_filename "$fname")"
+      if [[ "$tag" == "$quant" ]]; then
+        # Delete the backing blob if this is a symlink
+        if [[ -L "$f" ]]; then
+          local blob_path
+          blob_path="$(_resolve_link "$f")"
+          if [[ -f "$blob_path" ]]; then
+            rm -f "$blob_path"
+          fi
+        fi
+        rm -f "$f"
+        removed=$((removed + 1))
+      fi
+    done
+  done
+  [[ $removed -gt 0 ]]
+}
+
 # ── help ──────────────────────────────────────────────────────────────────────
 
 cmd_help() {
@@ -172,8 +281,8 @@ Commands:
   uninstall            Uninstall llama.cpp
   status               Show installed and latest available version
   pull <MODEL_NAME>    Download a HuggingFace model without running it
-  list (ls)            List downloaded HuggingFace models (with disk size)
-  remove (rm)          Remove a downloaded HuggingFace model
+  list (ls)            List downloaded HuggingFace models and quant variants
+  remove (rm)          Remove a downloaded model or specific quant variant
   run <MODEL_NAME>     Download and run a HuggingFace model
   serve <MODEL_NAME>   Download and serve a HuggingFace model
   ps                   Show running llama-cli / llama-server processes
@@ -347,6 +456,7 @@ _do_install() {
     echo "llama.cpp ${TAG} is already installed at: $TARGET_DIR"
     ln -sfn "$TARGET_DIR" "$CURRENT_LINK"
     install_path "$CURRENT_LINK" "$PROFILE_MODE"
+    install_completions "$PROFILE_MODE" || true
     return 0
   fi
 
@@ -397,6 +507,7 @@ _do_install() {
       echo "llama.cpp ${TAG} is already installed at: $TARGET_DIR"
       ln -sfn "$TARGET_DIR" "$CURRENT_LINK"
       install_path "$CURRENT_LINK" "$PROFILE_MODE"
+      install_completions "$PROFILE_MODE" || true
       rm -rf "$WORK_DIR"
       trap - EXIT
       return 0
@@ -739,9 +850,12 @@ cmd_list_usage() {
 Usage: $SCRIPT_NAME list [--quiet] [--json]
        $SCRIPT_NAME ls   [--quiet] [--json]
 
+Lists cached HuggingFace models. For GGUF models, each downloaded quant
+variant is shown as a separate row (e.g. user/model:Q4_K_M).
+
 Options:
-  --quiet   Print only model names, one per line (no headers/sizes). Useful for piping.
-  --json    Output as a JSON array of objects with 'name' and 'size' fields.
+  --quiet   Print only model[:quant] identifiers, one per line. Useful for piping.
+  --json    Output as a JSON array with 'name', 'quant', and 'size' fields.
 EOF
 }
 
@@ -779,10 +893,56 @@ cmd_list() {
     # within the user or model name remain as-is because they are stored as hyphens.
     local model_name="${entry#models--}"
     model_name="${model_name/--//}"
-    local size
-    size="$(du -sh "$dir" 2>/dev/null | cut -f1)"
-    entries+=("${model_name}|${size}")
-    found=1
+
+    # Discover cached GGUF files and list per-quant rows.
+    local gguf_files
+    gguf_files="$(_find_cached_gguf_files "$dir")"
+
+    if [[ -z "$gguf_files" ]]; then
+      # No GGUF files: fall back to model-level row with total directory size.
+      local size
+      size="$(du -sh "$dir" 2>/dev/null | cut -f1)"
+      entries+=("${model_name}||${size}")
+      found=1
+      continue
+    fi
+
+    # Get unique quant tags from the GGUF filenames.
+    local quant_tags
+    quant_tags="$(while IFS= read -r fname; do
+      extract_quant_from_filename "$fname"
+    done <<< "$gguf_files" | sort -u)"
+
+    while IFS= read -r tag; do
+      [[ -z "$tag" ]] && continue
+      # Find all snapshot files matching this quant tag and compute total size.
+      local matching_files=()
+      local snapshot_dir
+      for snapshot_dir in "$dir"snapshots/*/; do
+        [[ -d "$snapshot_dir" ]] || continue
+        local f
+        for f in "$snapshot_dir"*.gguf; do
+          [[ -f "$f" || -L "$f" ]] || continue
+          local ftag
+          ftag="$(extract_quant_from_filename "$(basename "$f")")"
+          if [[ "$ftag" == "$tag" ]]; then
+            matching_files+=("$f")
+          fi
+        done
+      done
+
+      local size
+      if [[ ${#matching_files[@]} -eq 1 ]]; then
+        size="$(du -shL "${matching_files[0]}" 2>/dev/null | cut -f1)"
+      elif [[ ${#matching_files[@]} -gt 1 ]]; then
+        size="$(du -chL "${matching_files[@]}" 2>/dev/null | tail -1 | cut -f1)"
+      else
+        size="?"
+      fi
+
+      entries+=("${model_name}|${tag}|${size}")
+      found=1
+    done <<< "$quant_tags"
   done
 
   if [[ "$found" -eq 0 ]]; then
@@ -796,19 +956,37 @@ cmd_list() {
 
   if [[ "$JSON" == "true" ]]; then
     printf '%s\n' "${entries[@]}" \
-      | jq -R 'split("|") | {name: .[0], size: .[1]}' \
+      | jq -R 'split("|") | {name: .[0], quant: (if .[1] == "" then null else .[1] end), size: .[2]}' \
       | jq -s '.'
   elif [[ "$QUIET" == "true" ]]; then
     local e
     for e in "${entries[@]}"; do
-      echo "${e%%|*}"
+      local name quant
+      name="${e%%|*}"
+      local rest="${e#*|}"
+      quant="${rest%%|*}"
+      if [[ -n "$quant" ]]; then
+        echo "${name}:${quant}"
+      else
+        echo "$name"
+      fi
     done
   else
     printf '%-55s  %s\n' "MODEL" "SIZE"
     printf '%-55s  %s\n' "-----" "----"
     local e
     for e in "${entries[@]}"; do
-      printf '%-55s  %s\n' "${e%%|*}" "${e#*|}"
+      local name quant size display_name
+      name="${e%%|*}"
+      local rest="${e#*|}"
+      quant="${rest%%|*}"
+      size="${rest#*|}"
+      if [[ -n "$quant" ]]; then
+        display_name="${name}:${quant}"
+      else
+        display_name="$name"
+      fi
+      printf '%-55s  %s\n' "$display_name" "$size"
     done
   fi
 }
@@ -817,14 +995,18 @@ cmd_list() {
 
 cmd_remove_usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME remove <MODEL_NAME> [--force]
-       $SCRIPT_NAME rm <MODEL_NAME> [--force]
+Usage: $SCRIPT_NAME remove <MODEL_NAME>[:<QUANT>] [--force]
+       $SCRIPT_NAME rm <MODEL_NAME>[:<QUANT>] [--force]
 
 Arguments:
   MODEL_NAME    HuggingFace model identifier, e.g. unsloth/gemma-4-26B-A4B-it-GGUF
+  QUANT         Optional quant tag to remove only a specific variant
+                (e.g. Q4_K_M, UD-Q6_K). Without it, the entire model is removed.
 
-Deletes the locally cached model. Refuses if the model is currently in use
-by llama-cli or llama-server.
+Use '$SCRIPT_NAME list' to see available quant tags.
+
+Deletes the locally cached model or quant variant. Refuses if the model is
+currently in use by llama-cli or llama-server.
 
 Options:
   --force       Skip the confirmation prompt.
@@ -880,7 +1062,7 @@ cmd_remove() {
     [[ $# -eq 0 ]] && return 1 || return 0
   fi
 
-  local model_name="$1"
+  local model_spec="$1"
   local force="false"
   shift
 
@@ -891,6 +1073,11 @@ cmd_remove() {
       *)         echo "Unknown argument: $1" >&2; cmd_remove_usage >&2; return 1 ;;
     esac
   done
+
+  local model_name quant
+  _parse_model_spec "$model_spec"
+  model_name="$REPLY_MODEL"
+  quant="$REPLY_QUANT"
 
   local cache_dir
   cache_dir="$(model_name_to_cache_dir "$model_name")"
@@ -903,12 +1090,58 @@ cmd_remove() {
     die "cannot remove '${model_name}': it is currently in use by llama-cli or llama-server."
   fi
 
-  confirm_destructive_action "removing cached model '${model_name}'" "$force" || return 1
+  if [[ -n "$quant" ]]; then
+    # Remove a specific quant variant.
+    local matching_files
+    matching_files="$(_find_gguf_by_quant "$cache_dir" "$quant")"
+    if [[ -z "$matching_files" ]]; then
+      die "no cached files matching quant '${quant}' found for model '${model_name}'"
+    fi
 
-  echo "Removing model: $model_name"
-  echo "  $cache_dir"
-  rm -rf "$cache_dir"
-  echo "Done."
+    confirm_destructive_action "removing quant '${quant}' from '${model_name}'" "$force" || return 1
+
+    echo "Removing quant: ${model_name}:${quant}"
+    _remove_quant_files "$cache_dir" "$quant"
+
+    # Clean up the model directory if no GGUF files remain.
+    local remaining
+    remaining="$(_find_cached_gguf_files "$cache_dir")"
+    if [[ -z "$remaining" ]]; then
+      echo "No remaining quants. Removing model cache."
+      rm -rf "$cache_dir"
+    fi
+    echo "Done."
+  else
+    # Remove entire model (all quants).
+    # Enumerate quant variants so the user knows exactly what will be deleted.
+    local all_quants quant_list=()
+    all_quants="$(_find_cached_gguf_files "$cache_dir")"
+    if [[ -n "$all_quants" ]]; then
+      while IFS= read -r fname; do
+        [[ -z "$fname" ]] && continue
+        local tag
+        tag="$(extract_quant_from_filename "$fname")"
+        quant_list+=("$tag")
+      done < <(printf '%s\n' "$all_quants" | sort -u)
+    fi
+
+    echo "The following quant variants will be removed:"
+    if [[ ${#quant_list[@]} -gt 0 ]]; then
+      local q
+      for q in "${quant_list[@]}"; do
+        printf '  %s:%s\n' "$model_name" "$q"
+      done
+    else
+      printf '  %s  (no GGUF variants found)\n' "$model_name"
+    fi
+    echo
+
+    confirm_destructive_action "removing cached model '${model_name}'" "$force" || return 1
+
+    echo "Removing model: $model_name"
+    rm -rf "$cache_dir"
+    echo "Done."
+  fi
 }
 
 # ── pull ──────────────────────────────────────────────────────────────────────
@@ -1280,17 +1513,9 @@ complete -c $sn -n "__fish_seen_subcommand_from uninstall remove rm prune" -l fo
 complete -c $sn -n "__fish_seen_subcommand_from list ls"     -l quiet            -d 'Only print names'
 complete -c $sn -n "__fish_seen_subcommand_from list ls"     -l json             -d 'JSON output'
 
-# Model name completion for commands that take MODEL_NAME.
+# Model name completion for commands that take MODEL_NAME[:QUANT].
 function __yallama_cached_models
-  set hub \$HOME/.cache/huggingface/hub
-  if test -d \$hub
-    for d in \$hub/models--*/
-      set entry (basename \$d)
-      set name (string replace --regex '^models--' '' \$entry)
-      set name (string replace --regex -- '\-\-' '/' \$name)
-      echo \$name
-    end
-  end
+  yallama ls --quiet 2>/dev/null
 end
 complete -c $sn -n "__fish_seen_subcommand_from run serve pull remove rm" -a "(__yallama_cached_models)"
 EOF
@@ -1303,14 +1528,9 @@ _completions_zsh() {
 # Zsh completions for yallama  (generated by: yallama install)
 
 _yallama_cached_models() {
-  local hub="$HOME/.cache/huggingface/hub"
-  local models=()
-  [[ -d "$hub" ]] && for d in "$hub"/models--*/; do
-    local e; e="$(basename "$d")"
-    local n="${e#models--}"; n="${n/--//}"
-    models+=("$n")
-  done
-  _values 'model' "${models[@]}"
+  local specs
+  specs=(${(f)"$(yallama ls --quiet 2>/dev/null)"})
+  (( ${#specs[@]} )) && _values 'model[:quant]' "${specs[@]}"
 }
 
 _yallama() {
@@ -1388,27 +1608,25 @@ _completions_bash() {
 # Bash completions for $sn  (generated by: $sn install)
 _${sn//-/_}_completions() {
   local cur prev words cword
+  # Remove ':' from word-break chars so model:quant is treated as one token.
+  local _saved_wb="\$COMP_WORDBREAKS"
+  COMP_WORDBREAKS="\${COMP_WORDBREAKS//:}"
   _init_completion 2>/dev/null || { cur="\${COMP_WORDS[COMP_CWORD]}"; prev="\${COMP_WORDS[COMP_CWORD-1]}"; }
   local commands="install update versions prune uninstall status pull list ls remove rm run serve ps help"
   if [[ \$COMP_CWORD -eq 1 ]]; then
     COMPREPLY=(\$(compgen -W "\$commands" -- "\$cur"))
+    COMP_WORDBREAKS="\$_saved_wb"
     return
   fi
   local cmd="\${COMP_WORDS[1]}"
-  local hub="\$HOME/.cache/huggingface/hub"
   local models=()
-  if [[ -d "\$hub" ]]; then
-    for d in "\$hub"/models--*/; do
-      [[ -d "\$d" ]] || continue
-      local e; e="\$(basename "\$d")"
-      local n="\${e#models--}"; n="\${n/--//}"
-      models+=("\$n")
-    done
-  fi
+  while IFS= read -r _yl; do
+    [[ -n "\$_yl" ]] && models+=("\$_yl")
+  done < <(yallama ls --quiet 2>/dev/null)
   case "\$prev" in
-    --path)  COMPREPLY=(\$(compgen -d -- "\$cur")); return ;;
-    --shell) COMPREPLY=(\$(compgen -W "fish zsh bash" -- "\$cur")); return ;;
-    --arch)  COMPREPLY=(\$(compgen -W "macos-arm64 macos-x86_64 ubuntu-x64 ubuntu-arm64" -- "\$cur")); return ;;
+    --path)  COMPREPLY=(\$(compgen -d -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
+    --shell) COMPREPLY=(\$(compgen -W "fish zsh bash" -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
+    --arch)  COMPREPLY=(\$(compgen -W "macos-arm64 macos-x86_64 ubuntu-x64 ubuntu-arm64" -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
   esac
   case "\$cmd" in
     install)  COMPREPLY=(\$(compgen -W "--tag --path --arch --shell-profile --no-shell-profile --print-latest-tag" -- "\$cur")) ;;
@@ -1417,9 +1635,7 @@ _${sn//-/_}_completions() {
     status)   COMPREPLY=(\$(compgen -W "--path --check-update" -- "\$cur")) ;;
     list|ls)  COMPREPLY=(\$(compgen -W "--quiet --json" -- "\$cur")) ;;
     pull|run|serve)
-      COMPREPLY=(
-        \$(compgen -W "\${models[*]}" -- "\$cur")
-      ) ;;
+      COMPREPLY=(\$(compgen -W "\${models[*]}" -- "\$cur")) ;;
     remove|rm)
       if [[ "\$cur" == --* ]]; then
         COMPREPLY=(\$(compgen -W "--force" -- "\$cur"))
@@ -1429,6 +1645,7 @@ _${sn//-/_}_completions() {
     versions) COMPREPLY=(\$(compgen -W "--path" -- "\$cur")) ;;
     prune)    COMPREPLY=(\$(compgen -W "--path --force" -- "\$cur")) ;;
   esac
+  COMP_WORDBREAKS="\$_saved_wb"
 }
 complete -F _${sn//-/_}_completions $sn
 EOF
