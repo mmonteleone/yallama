@@ -36,13 +36,20 @@ set -euo pipefail
 # rather than the name of the symlink used to call it.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "$0")"
+# These globals are read by the sourced lib modules; shellcheck can't see
+# cross-source usage, so suppress the false "unused" warnings here.
+# shellcheck disable=SC2034
 DEFAULT_INSTALL_ROOT="${HOME}/.llama.cpp"
+# shellcheck disable=SC2034
 DEFAULT_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+# shellcheck disable=SC2034
 DEFAULT_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+# shellcheck disable=SC2034
 HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
 # In-process cache for the shell profile edit permission decision.
 # Set to "allow" or "deny" by shell_profile_edits_allowed() to avoid
 # prompting the user more than once within a single invocation.
+# shellcheck disable=SC2034
 SHELL_PROFILE_EDIT_DECISION=""
 # @VERSION@ is replaced with the git tag by tools/build-standalone.sh at build time.
 # When running directly from source (dev mode), this placeholder is preserved.
@@ -52,11 +59,17 @@ YALLAMA_VERSION="@VERSION@"
 # tools/build-standalone.sh replaces the region between the BEGIN/END markers
 # with the inlined content of each file.
 # BEGIN_GENERATED_MODULES
+# shellcheck source=src/lib/yallama-helpers.sh
 source "${SCRIPT_DIR}/lib/yallama-helpers.sh"
+# shellcheck source=src/lib/yallama-cache.sh
 source "${SCRIPT_DIR}/lib/yallama-cache.sh"
+# shellcheck source=src/lib/yallama-profiles.sh
 source "${SCRIPT_DIR}/lib/yallama-profiles.sh"
+# shellcheck source=src/lib/yallama-runtime.sh
 source "${SCRIPT_DIR}/lib/yallama-runtime.sh"
+# shellcheck source=src/lib/yallama-search.sh
 source "${SCRIPT_DIR}/lib/yallama-search.sh"
+# shellcheck source=src/lib/yallama-completions.sh
 source "${SCRIPT_DIR}/lib/yallama-completions.sh"
 # END_GENERATED_MODULES
 

@@ -1,4 +1,5 @@
 # Shell completion generators for yallama.
+# shellcheck shell=bash
 # Each _completions_<shell>() function emits a heredoc of shell-native
 # completion code; the output is written to the appropriate completions
 # directory by install_completions() in yallama-runtime.sh.

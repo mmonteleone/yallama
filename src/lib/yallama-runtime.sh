@@ -1,4 +1,5 @@
 # Runtime lifecycle helpers for yallama.
+# shellcheck shell=bash
 
 # macOS Gatekeeper places a quarantine extended attribute on files downloaded
 # from the internet, blocking execution until the user approves them in System
@@ -109,6 +110,7 @@ install_path() {
     zsh)
       local zshrc="${ZDOTDIR:-$HOME}/.zshrc"
       if ! grep -qF "$begin_marker" "$zshrc" 2>/dev/null; then
+        # shellcheck disable=SC2016  # $PATH intentionally literal in the written string
         printf '\n%s\nexport PATH="%s:$PATH"\n%s\n' \
           "$begin_marker" "$current_link" "$end_marker" >> "$zshrc"
         echo "Added to PATH in $zshrc"
@@ -126,6 +128,7 @@ install_path() {
         bash_conf="${HOME}/.bashrc"
       fi
       if ! grep -qF "$begin_marker" "$bash_conf" 2>/dev/null; then
+        # shellcheck disable=SC2016  # $PATH intentionally literal in the written string
         printf '\n%s\nexport PATH="%s:$PATH"\n%s\n' \
           "$begin_marker" "$current_link" "$end_marker" >> "$bash_conf"
         echo "Added to PATH in $bash_conf"
@@ -324,6 +327,7 @@ install_completions() {
       local dest="${HOME}/.bash_completion.d/${SCRIPT_NAME}"
       mkdir -p "${HOME}/.bash_completion.d"
       _completions_bash > "$dest"
+      # shellcheck disable=SC2016  # loader is a literal string to be written into .bashrc
       local loader='for f in ~/.bash_completion.d/*; do [[ -f "$f" ]] && source "$f"; done'
       if [[ -f "${HOME}/.bashrc" ]] && ! grep -qF 'bash_completion.d' "${HOME}/.bashrc"; then
         if shell_profile_edits_allowed "$profile_mode"; then

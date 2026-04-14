@@ -199,6 +199,7 @@ test_generated_standalone_script() {
     return
   fi
 
+  # shellcheck disable=SC2016  # single-quoted grep pattern is intentional literal
   if grep -q 'source "${SCRIPT_DIR}/lib/' "$generated_script"; then
     fail 'generated standalone script is self-contained' 'expected generated script to inline module code instead of sourcing src/lib/*.sh'
     return
@@ -1083,7 +1084,7 @@ test_search_empty_results_json() {
   fi
 
   local val
-  val="$(cat "$stdout_file" | tr -d '[:space:]')"
+  val="$(tr -d '[:space:]' < "$stdout_file")"
   if [[ "$val" != '[]' ]]; then
     fail 'search empty results --json' "expected '[]', got: $val"
     return

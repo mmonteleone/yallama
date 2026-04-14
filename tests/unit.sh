@@ -2,6 +2,7 @@
 # Unit tests for pure helper functions (yallama-cache.sh, yallama-helpers.sh).
 # These tests exercise functions directly without running yallama as a subprocess.
 
+# shellcheck source=tests/test-helpers.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-helpers.sh"
 
 # Override HOME/HF_HUB_DIR for isolation.

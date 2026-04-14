@@ -1,4 +1,5 @@
 # Profile and template helpers for yallama.
+# shellcheck shell=bash
 
 # Return the resolved profiles directory (env override or default).
 # ${YALLAMA_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}: use the env var if set,

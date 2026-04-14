@@ -1,4 +1,5 @@
 # Shared utility helpers for yallama.
+# shellcheck shell=bash
 
 # Print an error message to stderr and exit non-zero.
 die() { echo "Error: $*" >&2; exit 1; }

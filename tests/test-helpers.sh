@@ -5,6 +5,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[1]}")/.." && pwd)"
+# SCRIPT_PATH and RUN_STATUS are read by the scripts that source this file.
+# shellcheck disable=SC2034
 SCRIPT_PATH="${ROOT_DIR}/src/yallama.sh"
 TEST_ROOT="$(mktemp -d)"
 
@@ -68,6 +70,7 @@ run_cmd() {
 
   set +e
   "$@" >"$stdout_file" 2>"$stderr_file"
+  # shellcheck disable=SC2034  # RUN_STATUS is read by tests that source this file
   RUN_STATUS=$?
   set -e
 }
@@ -81,6 +84,7 @@ source_yallama_libs() {
   DEFAULT_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
   HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
   SHELL_PROFILE_EDIT_DECISION=""
+  # shellcheck disable=SC2034  # YALLAMA_VERSION is read by the sourced lib modules
   YALLAMA_VERSION="dev"
 
   source "${ROOT_DIR}/src/lib/yallama-helpers.sh"

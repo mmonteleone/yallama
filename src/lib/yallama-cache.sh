@@ -1,4 +1,5 @@
 # Cache and quant helpers for yallama.
+# shellcheck shell=bash
 
 # Parse "user/model[:quant]" into globals REPLY_MODEL and REPLY_QUANT.
 # Uses bash parameter expansion operators:

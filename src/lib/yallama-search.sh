@@ -1,4 +1,5 @@
 # Search and browse helpers for yallama.
+# shellcheck shell=bash
 
 cmd_search_usage() {
   cat <<EOF
