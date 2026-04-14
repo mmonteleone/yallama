@@ -1,8 +1,11 @@
 # Profile and template helpers for yallama.
 
 # Return the resolved profiles directory (env override or default).
+# ${YALLAMA_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}: use the env var if set,
+# otherwise fall back to the default. This pattern is used for all overridable dirs.
 _profiles_dir() {
   local dir="${YALLAMA_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}"
+  # ${dir/#\~/$HOME}: expand leading tilde (see ensure_llama_in_path).
   dir="${dir/#\~/$HOME}"
   printf '%s' "$dir"
 }
@@ -64,6 +67,8 @@ _get_template_content() {
   if [[ -f "$path" ]]; then
     cat "$path"
   elif _get_builtin_template_content "$name"; then
+    # ':' (colon): bash no-op. The elif already printed the template to stdout;
+    # this empty then-body avoids a syntax error.
     :
   else
     die "template '${name}' not found"
@@ -71,6 +76,8 @@ _get_template_content() {
 }
 
 # Validate a template name: alphanumeric, hyphens, underscores only.
+# The regex [^a-zA-Z0-9_-] matches any character NOT in the allowed set;
+# if it matches, the name is invalid.
 _validate_template_name() {
   local name="$1"
   if [[ -z "$name" || "$name" =~ [^a-zA-Z0-9_-] ]]; then
@@ -90,10 +97,11 @@ _validate_profile_name() {
 # Usage: _load_profile <name> [run|serve]
 # Sets REPLY_PROFILE_MODEL and REPLY_PROFILE_ARGS (array).
 #
-# Profile files may contain optional [run] and [serve] section headers.
-# Flags before any header are common to both commands.
-# Flags under [run] are included only when mode is "run".
-# Flags under [serve] are included only when mode is "serve".
+# Profile files use an INI-like section model:
+#   - Lines before any [run] / [serve] header are common to both commands.
+#   - Lines under [run] are included only when mode is "run".
+#   - Lines under [serve] are included only when mode is "serve".
+# Each flag line holds one flag or a flag+value pair (e.g. "--ctx-size 8192").
 _load_profile() {
   local name="$1"
   local mode="${2:-}"
@@ -107,6 +115,7 @@ _load_profile() {
   local section="common"
   local line
   while IFS= read -r line || [[ -n "$line" ]]; do
+    # Strip trailing whitespace (bash extglob pattern *( ) = zero or more spaces).
     line="${line%%*( )}"
     [[ -z "$line" || "$line" == '#'* ]] && continue
 
@@ -119,6 +128,8 @@ _load_profile() {
     fi
 
     if [[ "$section" == "common" || -z "$mode" || "$section" == "$mode" ]]; then
+      # read -ra word-splits the line into an array so that multi-token
+      # lines like "--ctx-size 8192" become two separate array elements.
       read -ra _flag_words <<< "$line"
       REPLY_PROFILE_ARGS+=("${_flag_words[@]}")
     fi
@@ -258,8 +269,15 @@ _cmd_profile_set() {
   local path
   path="$(_profile_path "$name")"
 
+  # { ... } > "$path": brace group redirects all enclosed output to the file.
+  # This is more efficient than multiple individual redirects and ensures
+  # the file is written atomically (opened once, closed once).
   {
     printf 'model=%s\n' "$model_spec"
+    # Write flags one-per-line or as flag+value pairs on one line
+    # (e.g. "--ctx-size 8192") to keep the profile file human-readable.
+    # Walk the extra_args array: if arg[i] starts with '-' and arg[i+1]
+    # does not, treat them as a flag+value pair and emit them together.
     local i=0
     local _nargs=${#extra_args[@]}
     while [[ $i -lt $_nargs ]]; do
@@ -399,6 +417,8 @@ _cmd_profile_new() {
 
   mkdir -p "$profiles_dir"
 
+  # Build the profile file: model= line first, then all template lines
+  # except any embedded model= line (which was overridden above).
   {
     printf 'model=%s\n' "$model"
     while IFS= read -r tline; do
@@ -411,6 +431,7 @@ _cmd_profile_new() {
 }
 
 _cmd_profile_templates() {
+  # 'local -a': explicitly declare a local array variable.
   local -a builtin_names=( chat code )
   local templates_dir
   templates_dir="$(_templates_dir)"
@@ -459,6 +480,8 @@ _cmd_profile_template_set() {
   _validate_template_name "$name"
 
   local model_spec=""
+  # Positional sniffing: if the next argument is not '--' and doesn't start
+  # with '-', treat it as an optional MODEL_SPEC before any flags.
   if [[ $# -gt 0 && "$1" != "--" && "$1" != -* ]]; then
     model_spec="$1"
     shift
@@ -509,6 +532,7 @@ _cmd_profile_template_remove() {
   local name="$1"
   _validate_template_name "$name"
 
+  # Guard: built-in templates are compiled into the script and can't be deleted.
   if _get_builtin_template_content "$name" >/dev/null 2>&1; then
     die "cannot remove built-in template '${name}'"
   fi

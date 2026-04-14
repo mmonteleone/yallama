@@ -1,5 +1,11 @@
 # Shell completion generators for yallama.
+# Each _completions_<shell>() function emits a heredoc of shell-native
+# completion code; the output is written to the appropriate completions
+# directory by install_completions() in yallama-runtime.sh.
 
+# Generate Fish shell completions for yallama.
+# Fish uses the __fish_seen_subcommand_from helper to scope completions
+# to specific subcommands, with -n conditions as guards.
 _completions_fish() {
   local sn="$SCRIPT_NAME"
   cat <<EOF
@@ -83,6 +89,10 @@ end
 EOF
 }
 
+# Generate Zsh completions for yallama.
+# Uses Zsh's _arguments state-machine approach with a nested case for profile
+# subcommands. The heredoc uses a quoted delimiter ('ZSHEOF') so that bash
+# does not expand the $, (), and other Zsh-specific syntax inside the body.
 _completions_zsh() {
   local sn="$SCRIPT_NAME"
   cat <<'ZSHEOF'
@@ -219,6 +229,13 @@ _yallama
 ZSHEOF
 }
 
+# Generate Bash completions for yallama.
+# Registers a _yallama_completions() function via 'complete -F'.
+#
+# COMP_WORDBREAKS: bash completion normally splits on ':', which would break
+# "user/model:Q4_K_M" into two separate tokens. COMP_WORDBREAKS is narrowed
+# (removing ':') for the duration of the completion call so that
+# model:quant strings are treated as a single token for matching.
 _completions_bash() {
   local sn="$SCRIPT_NAME"
   cat <<EOF

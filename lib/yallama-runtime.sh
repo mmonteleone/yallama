@@ -1,11 +1,18 @@
 # Runtime lifecycle helpers for yallama.
 
+# macOS Gatekeeper places a quarantine extended attribute on files downloaded
+# from the internet, blocking execution until the user approves them in System
+# Settings. Strip the attribute here so freshly downloaded llama.cpp binaries
+# run without a Gatekeeper popup. No-ops on non-Darwin systems.
 clear_macos_quarantine() {
   local target="$1"
 
   [[ "$(uname -s)" == "Darwin" ]] || return 0
   command -v xattr >/dev/null 2>&1 || return 0
 
+  # xattr -dr: -d delete, -r recursive. Strips the quarantine attribute from
+  # the directory and all files inside it. '|| true' ignores errors (e.g. if
+  # the attribute doesn't exist or the system is too old to support it).
   xattr -dr com.apple.quarantine "$target" 2>/dev/null || true
 }
 
@@ -35,6 +42,10 @@ detect_arch() {
   esac
 }
 
+# Perform a GitHub API GET with appropriate headers and retry behaviour.
+# -f: fail on HTTP errors (non-2xx); -s: silent mode (no progress meter);
+# -S: still show errors despite -s; -L: follow redirects.
+# The Accept and X-GitHub-Api-Version headers opt into the stable v3 JSON API.
 github_get() {
   local url="$1"
   curl -fsSL \
@@ -48,6 +59,7 @@ github_get() {
     "$url"
 }
 
+# Fetch the release JSON for a given tag, or the latest release if tag is empty.
 get_release_json() {
   local tag="$1"
   if [[ -n "$tag" ]]; then
@@ -57,10 +69,14 @@ get_release_json() {
   fi
 }
 
+# Return just the tag name string of the latest llama.cpp release.
+# 'jq -r' outputs the raw string without JSON quotes.
 get_latest_tag() {
   get_release_json "" | jq -r '.tag_name'
 }
 
+# Add the llama.cpp bin directory to the user's shell profile (fish, zsh, or
+# bash) so it persists across new terminal sessions.
 install_path() {
   local current_link="$1"
   local profile_mode="$2"
@@ -69,6 +85,8 @@ install_path() {
 
   local begin_marker="# BEGIN yallama"
   local end_marker="# END yallama"
+  # The BEGIN/END sentinel lines make the PATH addition idempotent:
+  # re-running install will not append a duplicate entry to the shell profile.
 
   if ! shell_profile_edits_allowed "$profile_mode"; then
     echo "Skipping shell profile edits. Add this to your PATH manually:"
@@ -100,6 +118,8 @@ install_path() {
       ;;
     bash)
       local bash_conf
+      # On macOS, bash reads ~/.bash_profile for login shells (the default
+      # Terminal.app mode), while Linux typically uses ~/.bashrc.
       if [[ "$(uname -s)" == "Darwin" && -f "${HOME}/.bash_profile" ]]; then
         bash_conf="${HOME}/.bash_profile"
       else
@@ -149,6 +169,8 @@ _do_install() {
   echo "Fetching release metadata..."
   RELEASE_JSON="$(get_release_json "$TAG")"
 
+  # When TAG is empty, the API returns the latest release JSON. Extract the
+  # actual tag name from it so we can construct the correct asset filename.
   if [[ -z "$TAG" || "$TAG" == "null" ]]; then
     TAG="$(jq -r '.tag_name' <<<"$RELEASE_JSON")"
     [[ -z "$TAG" || "$TAG" == "null" ]] && die "failed to determine latest release tag."
@@ -156,6 +178,8 @@ _do_install() {
   fi
 
   local ASSET_URL
+  # jq --arg: pass the shell variable as a jq variable $asset_name
+  # (safer than string interpolation inside the jq filter).
   ASSET_URL="$({
     jq -r --arg asset_name "$ASSET_NAME" '
       .assets[]
@@ -169,11 +193,14 @@ _do_install() {
 
   local VERSION_DIR_NAME="llama-${TAG}"
   local TARGET_DIR="${INSTALL_ROOT}/${VERSION_DIR_NAME}"
+  # A marker file written after successful extraction indicates a complete install.
+  # If it exists we can skip downloading and re-extracting the archive.
   local MARKER_FILE="${TARGET_DIR}/.install-complete"
   local CURRENT_LINK="${INSTALL_ROOT}/current"
 
   mkdir -p "$INSTALL_ROOT"
 
+  # Clean up any stale staging dirs left over from a previous interrupted install.
   find "$INSTALL_ROOT" -maxdepth 1 -type d -name ".${VERSION_DIR_NAME}.tmp.*" -exec rm -rf {} +
 
   if [[ -f "$MARKER_FILE" ]]; then
@@ -191,6 +218,8 @@ _do_install() {
   local STAGE_PARENT
   STAGE_PARENT="$(mktemp -d "${WORK_DIR}/stage.XXXXXX")"
 
+  # Register a cleanup trap so the temporary work directory is always removed on
+  # exit, whether the install succeeds, fails, or is interrupted by a signal.
   trap 'rm -rf -- "$WORK_DIR"' EXIT
 
   echo "Downloading asset: $ASSET_NAME"
@@ -205,6 +234,8 @@ _do_install() {
   echo "Extracting archive..."
   tar -xzf "$ARCHIVE_PATH" -C "$EXTRACT_DIR"
 
+  # dotglob: include dot-files in glob results.
+  # nullglob: expand to nothing (not a literal glob string) when no files match.
   shopt -s dotglob nullglob
   local EXTRACTED_ITEMS=("$EXTRACT_DIR"/*)
   shopt -u dotglob nullglob
@@ -224,6 +255,8 @@ _do_install() {
 
   clear_macos_quarantine "$STAGED_TARGET"
 
+  # Write the completion marker before the final move; it will become
+  # MARKER_FILE once the directory lands in its permanent location.
   touch "${STAGED_TARGET}/.install-complete"
 
   if [[ -e "$TARGET_DIR" ]]; then
@@ -239,9 +272,13 @@ _do_install() {
     die "target exists but is incomplete: $TARGET_DIR"
   fi
 
+  # Atomic rename: move the fully prepared staging directory to the final
+  # location in a single step, so the install is never partially visible.
   echo "Activating install at: $TARGET_DIR"
   mv "$STAGED_TARGET" "$TARGET_DIR"
 
+  # ln -sfn: -s symbolic, -f force (overwrite existing), -n don't follow
+  # existing symlink target (treat it as a regular file to replace).
   echo "Updating current symlink..."
   ln -sfn "$TARGET_DIR" "$CURRENT_LINK"
 
@@ -271,6 +308,8 @@ install_completions() {
     zsh)
       local dest_dir=""
       local p
+      # Walk zsh's fpath array to find a writable user-owned directory for
+      # completions. Falls back to ~/.zfunc if none is found.
       for p in "${fpath[@]:-}"; do
         if [[ "$p" == "${HOME}"* && -d "$p" && -w "$p" ]]; then
           dest_dir="$p"
@@ -303,6 +342,9 @@ install_completions() {
   esac
 }
 
+# Install or update llama.cpp from a GitHub release.
+# Manages the argument-parsing loop common to all cmd_* functions:
+# 'while [[ $# -gt 0 ]]; do case ... shift; done'
 cmd_install() {
   require_cmds curl tar mktemp mv rm mkdir touch ln find jq basename
 
@@ -338,6 +380,8 @@ cmd_install() {
 
   [[ -z "$ARCH" ]] && ARCH="$(detect_arch)"
 
+  # ${INSTALL_ROOT/#\~/$HOME}: expand leading tilde. See ensure_llama_in_path.
+  # ${INSTALL_ROOT%/}: strip trailing slash for consistent path joining.
   INSTALL_ROOT="${INSTALL_ROOT/#\~/$HOME}"
   INSTALL_ROOT="${INSTALL_ROOT%/}"
 
@@ -385,6 +429,8 @@ cmd_update() {
   local CURRENT_LINK="${INSTALL_ROOT}/current"
   local INSTALLED_TAG=""
   if [[ -L "$CURRENT_LINK" ]]; then
+    # Extract the installed tag from the symlink target directory name:
+    # e.g. ~/.llama.cpp/llama-b5880 → basename → llama-b5880 → strip "llama-" → b5880
     INSTALLED_TAG="$(basename "$(readlink "$CURRENT_LINK")")"
     INSTALLED_TAG="${INSTALLED_TAG#llama-}"
   fi
@@ -437,6 +483,8 @@ cmd_status() {
 
   local CURRENT_LINK="${INSTALL_ROOT}/current"
 
+  # Check both -L (symlink) and -d (directory): the current link should be
+  # a symlink, but also handle edge cases where it was replaced with a directory.
   if [[ ! -L "$CURRENT_LINK" && ! -d "$CURRENT_LINK" ]]; then
     echo "llama.cpp: not installed (${INSTALL_ROOT})"
     return 0
@@ -444,6 +492,7 @@ cmd_status() {
 
   local INSTALLED_TAG=""
   if [[ -L "$CURRENT_LINK" ]]; then
+    # Extract the version tag from the symlink target's directory name.
     INSTALLED_TAG="$(basename "$(readlink "$CURRENT_LINK")")"
     INSTALLED_TAG="${INSTALLED_TAG#llama-}"
   fi
@@ -542,6 +591,8 @@ cmd_uninstall() {
 
   if [[ "$DELETE_SELF" == "true" ]]; then
     local self_path
+    # 'command -v' locates the script on PATH; '|| true' prevents set -e
+    # from aborting if the script isn't found.
     self_path="$(command -v "$SCRIPT_NAME" 2>/dev/null || true)"
     if [[ -z "$self_path" ]]; then
       echo "Could not locate $SCRIPT_NAME on PATH; skipping self-removal."
@@ -589,16 +640,19 @@ cmd_versions() {
   local current_dir=""
   if [[ -L "$current_link" ]]; then
     current_dir="$(readlink "$current_link")"
+    # If the readlink result is relative, make it absolute by prepending INSTALL_ROOT.
     [[ "$current_dir" != /* ]] && current_dir="${INSTALL_ROOT}/${current_dir}"
   fi
 
   local found=0
   local dir
   for dir in "$INSTALL_ROOT"/llama-*/; do
+    # Glob may match literally "llama-*/" if no directories exist; skip non-dirs.
     [[ -d "$dir" ]] || continue
     found=1
     local tag
     tag="$(basename "$dir")"
+    # ${tag#llama-}: strip the "llama-" prefix, leaving just the version tag.
     tag="${tag#llama-}"
     local dir_abs="${dir%/}"
     if [[ "$dir_abs" == "$current_dir" ]]; then
@@ -645,6 +699,7 @@ cmd_prune() {
   local current_dir=""
   if [[ -L "$current_link" ]]; then
     current_dir="$(readlink "$current_link")"
+    # readlink may return a relative path; make it absolute for comparison.
     [[ "$current_dir" != /* ]] && current_dir="${INSTALL_ROOT}/${current_dir}"
   fi
 
@@ -722,9 +777,18 @@ cmd_pull() {
   # Force a non-conversation single turn with a non-empty placeholder prompt so
   # llama-cli downloads into the HF cache and exits instead of entering chat
   # mode on models that advertise a chat template by default.
+  # Invoke llama-cli just long enough to warm the HF cache, then exit:
+  # --no-conversation --single-turn: one-shot mode so the process exits after one pass.
+  # --prompt ' ': a single space avoids the "no prompt" error raised by some models.
+  # --no-display-prompt: suppress the placeholder prompt from being printed.
+  # -n 0: predict zero tokens so llama-cli exits immediately after model loading.
+  # </dev/null: close stdin to prevent llama-cli from reading interactively.
   local hf_token="${HF_TOKEN:-${HF_HUB_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}}"
   local hf_args=()
   [[ -n "$hf_token" ]] && hf_args=(--hf-token "$hf_token")
+  # '|| pull_status=$?': capture llama-cli's exit code instead of letting
+  # set -e abort the script on non-zero. We check pull_status below to
+  # provide a more helpful error message.
   local pull_status=0
   llama-cli -hf "$model_spec" "${hf_args[@]+"${hf_args[@]}"}" --no-conversation --single-turn --prompt ' ' --no-display-prompt -n 0 </dev/null || pull_status=$?
 
@@ -785,7 +849,8 @@ cmd_run() {
     extra_args=("$@")
   fi
 
-  # If the spec has no '/', treat it as a profile name.
+  # If the spec contains no '/', it cannot be a "USER/MODEL" HuggingFace id.
+  # Treat it as a saved profile name and load its model and flags.
   local profile_args=()
   if [[ "$model_spec" != */* ]]; then
     _load_profile "$model_spec" run
@@ -798,6 +863,11 @@ cmd_run() {
   local hf_token="${HF_TOKEN:-${HF_HUB_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}}"
   local hf_args=()
   [[ -n "$hf_token" ]] && hf_args=(--hf-token "$hf_token")
+  # exec replaces the shell process with llama-cli so signals and exit codes
+  # flow directly to the caller without an extra wrapper layer.
+  # "${arr[@]+"${arr[@]}"}" is the safe empty-array expansion idiom: without
+  # the ${+...} guard, "${arr[@]}" expands to a single empty-string argument
+  # when the array is empty, which would be passed to llama-cli as a flag.
   exec llama-cli -hf "$model_spec" "${hf_args[@]+"${hf_args[@]}"}" \
     "${profile_args[@]+"${profile_args[@]}"}" \
     "${extra_args[@]+"${extra_args[@]}"}"
@@ -844,7 +914,8 @@ cmd_serve() {
     extra_args=("$@")
   fi
 
-  # If the spec has no '/', treat it as a profile name.
+  # If the spec contains no '/', it cannot be a "USER/MODEL" HuggingFace id.
+  # Treat it as a saved profile name and load its model and flags.
   local profile_args=()
   if [[ "$model_spec" != */* ]]; then
     _load_profile "$model_spec" serve
@@ -857,6 +928,8 @@ cmd_serve() {
   local hf_token="${HF_TOKEN:-${HF_HUB_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}}"
   local hf_args=()
   [[ -n "$hf_token" ]] && hf_args=(--hf-token "$hf_token")
+  # exec replaces the shell process with llama-server so signals and exit
+  # codes flow directly to the caller. --jinja enables template-based chat.
   exec llama-server -hf "$model_spec" --jinja \
     "${hf_args[@]+"${hf_args[@]}"}" \
     "${profile_args[@]+"${profile_args[@]}"}" \
@@ -867,6 +940,10 @@ cmd_serve() {
 
 cmd_ps() {
   local ps_output
+  # Try GNU/Linux ps format first (-eo); fall back to BSD/macOS (-ax -o).
+  # The awk script filters to llama-cli and llama-server processes only,
+  # matching both by process name and by the full argument list to catch
+  # cases where the binary is invoked via a path prefix (e.g. /usr/bin/llama-cli).
   ps_output="$({ ps -eo pid=,comm=,args= -ww 2>/dev/null || ps -ax -o pid=,comm=,args= -ww 2>/dev/null; } | awk '
     {
       pid = $1
@@ -897,6 +974,7 @@ cmd_ps() {
       if (proc != "llama-server") {
         port = "-"
       } else if (port == "-") {
+        # llama-server defaults to port 8080 when --port is not explicitly given.
         port = "8080"
       }
 
@@ -912,6 +990,8 @@ cmd_ps() {
   printf '%-8s  %-14s  %-10s  %s\n' 'PID' 'PROCESS' 'PORT' 'MODEL'
   printf '%-8s  %-14s  %-10s  %s\n' '---' '-------' '----' '-----'
 
+  # IFS=$'\t': use tab as the field separator for read, matching the
+  # tab-delimited output from the awk script above.
   while IFS=$'\t' read -r pid proc port model; do
     printf '%-8s  %-14s  %-10s  %s\n' "$pid" "$proc" "$port" "$model"
   done <<< "$ps_output"

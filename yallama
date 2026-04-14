@@ -25,17 +25,30 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# set -e: exit immediately on any non-zero return (unless caught by && / || / if).
+# set -u: treat references to unset variables as errors.
+# set -o pipefail: a pipeline fails if *any* command in it fails (not just the last).
+# Together these provide strict error handling that catches common bash pitfalls.
 set -euo pipefail
 
+# Resolve the real directory of this script even when invoked via a symlink.
+# Using ${BASH_SOURCE[0]} rather than $0 ensures we get the script's own path
+# rather than the name of the symlink used to call it.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "$0")"
 DEFAULT_INSTALL_ROOT="${HOME}/.llama.cpp"
 DEFAULT_PROFILES_DIR="${HOME}/.config/yallama/profiles"
 DEFAULT_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
 HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
+# In-process cache for the shell profile edit permission decision.
+# Set to "allow" or "deny" by shell_profile_edits_allowed() to avoid
+# prompting the user more than once within a single invocation.
 SHELL_PROFILE_EDIT_DECISION=""
 YALLAMA_VERSION="0.1.1"
 
+# Source all library modules. When building a standalone script,
+# tools/build-standalone.sh replaces the region between the BEGIN/END markers
+# with the inlined content of each file.
 # BEGIN_GENERATED_MODULES
 source "${SCRIPT_DIR}/lib/yallama-helpers.sh"
 source "${SCRIPT_DIR}/lib/yallama-cache.sh"
@@ -85,6 +98,8 @@ EOF
 # ── dispatch ──────────────────────────────────────────────────────────────────
 
 COMMAND="${1:-help}"
+# 'shift || true': consume the command word without failing when $# is 0,
+# since set -euo pipefail would otherwise treat the empty shift as an error.
 shift || true
 
 case "$COMMAND" in

@@ -20,6 +20,14 @@ Options:
 EOF
 }
 
+# Inline jq helper function definitions reused across all jq invocations in cmd_search.
+#
+#   quant_rank    assign a numeric sort weight so higher-precision types sort first:
+#                   F32 → -32, F16/BF16 → -16, QN → -N, unknown → 0.
+#   quants        extract all unique quant tags from a model's .siblings[] filenames
+#                 using the same separator + pattern logic as extract_quant_from_filename.
+#   default_quant select the 'best default' GGUF: prefer Q4_K_M, then Q4_0,
+#                 then the lexicographically first GGUF found.
 # shellcheck disable=SC2016  # $ signs are jq regex anchors, not bash variables
 _jq_quants_def='def quant_rank: if test("^F32$") then -32 elif test("^(BF16|F16)$") then -16 elif test("^(?:[A-Z]{2}[-_])?I?Q[0-9]+") then (capture("^(?:[A-Z]{2}[-_])?I?Q(?<n>[0-9]+)") | .n | tonumber | -.) else 0 end; def quants: [.siblings[]? | select(.rfilename | test("[.]gguf$")) | .rfilename | split("/") | last | gsub("[.]gguf$"; "") | gsub("-[0-9]+-of-[0-9]+$"; "") | capture("[-._](?<q>(?:[A-Z]{2}[-_])?(?:I?Q[0-9]+(?:_[A-Z0-9]+)*|F16|BF16|F32))$")? | .q] | unique | sort_by(quant_rank); def default_quant: [.siblings[]? | select(.rfilename | test("[.]gguf$")) | .rfilename] as $files | ((([$files[] | select(test("Q4_K_M[.-]"; "i"))] | sort | .[0]) // ([$files[] | select(test("Q4_0[.-]"; "i"))] | sort | .[0]) // ($files | sort | .[0])) as $f | if $f != null then (($f | split("/") | last | gsub("[.]gguf$"; "") | gsub("-[0-9]+-of-[0-9]+$"; "")) as $stem | (($stem | capture("[-._](?<q>(?:[A-Z]{2}[-_])?(?:I?Q[0-9]+(?:_[A-Z0-9]+)*|F16|BF16|F32))$")? | .q) // $stem)) else null end);'
 
@@ -65,15 +73,22 @@ cmd_search() {
   local auth_header=()
   [[ -n "$hf_token" ]] && auth_header=(-H "Authorization: Bearer ${hf_token}")
 
+  # URL-encode the query string using jq's built-in @uri formatter, avoiding
+  # a dependency on python, perl, or other external URL-encoding utilities.
   local encoded_query
   encoded_query="$(printf '%s' "$query" | jq -Rr @uri)"
 
+  # library=gguf: HF API filter that limits results to repos tagged as GGUF format.
+  # full=true: include sibling (file list) data needed to extract quant names.
   local url="https://huggingface.co/api/models?search=${encoded_query}&library=gguf&sort=${api_sort}&direction=-1&limit=${limit}&full=true"
 
   local results
   results="$(curl -fsSL \
     --connect-timeout 15 \
     --max-time 30 \
+    # ${auth_header[@]+"${auth_header[@]}"}: safely expand an array that might
+    # be empty under 'set -u'. If auth_header has no elements, this expands to
+    # nothing instead of triggering an "unbound variable" error.
     "${auth_header[@]+"${auth_header[@]}"}" \
     -H "User-Agent: ${SCRIPT_NAME}" \
     "$url")"
@@ -110,6 +125,9 @@ cmd_search() {
     printf '%-60s  %10s  %s\n' 'MODEL' 'DOWNLOADS' 'LIKES'
     printf '%-60s  %10s  %s\n' '-----' '---------' '-----'
     if [[ "$quants" == "true" ]]; then
+      # @tsv: jq formatter that joins array elements with tab characters.
+      # Paired with IFS=$'\t' in the read loop below, this provides reliable
+      # field splitting even when values contain spaces.
       printf '%s' "$results" \
         | jq -r "${_jq_quants_def}"'
             .[] | select(quants | length > 0) | [.modelId, (.downloads // 0 | tostring), (.likes // 0 | tostring), (default_quant as $dq | quants | map(if . == $dq then "*" + . else . end) | join(" "))] | @tsv' \
@@ -169,6 +187,8 @@ cmd_browse() {
     return 0
   fi
 
+  # Platform-specific "open URL in default browser" command.
+  # macOS provides 'open', most Linux desktops provide 'xdg-open'.
   local open_cmd=""
   case "$(uname -s)" in
     Darwin) open_cmd="open" ;;
