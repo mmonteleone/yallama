@@ -260,7 +260,7 @@ Both steps prompt for confirmation. Add `--force` to skip prompts.
 
 ## Development
 
-The tracked root [yallama](/Users/mmonteleone/source/repos/yallama/yallama) is the modular source entrypoint. Standalone release artifacts are built from it plus the domain modules under [lib](/Users/mmonteleone/source/repos/yallama/lib).
+[src/yallama.sh](src/yallama.sh) is the modular source entrypoint. The domain modules live under [src/lib/](src/lib/). Standalone release artifacts are built from these sources by `tools/build-standalone.sh`, which inlines all modules and stamps in the version from the current git tag.
 
 Generate a standalone release artifact locally with:
 
@@ -271,7 +271,8 @@ bash tools/build-standalone.sh
 ## Validation
 
 ```sh
-shellcheck yallama
+shellcheck src/yallama.sh src/lib/*.sh
+bash tests/unit.sh
 bash tests/smoke.sh
 ```
 
