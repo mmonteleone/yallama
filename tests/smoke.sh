@@ -381,6 +381,68 @@ EOF
   pass 'non-interactive pull'
 }
 
+test_pull_quant_not_confused_by_other_cached_quant() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local args_log="${TEST_DIR}/llama-cli-args.log"
+  local model_name='demo/test-GGUF'
+  local model_spec='demo/test-GGUF:UD-Q4_K_M'
+  local cache_dir="${HOME}/.cache/huggingface/hub/models--demo--test-GGUF"
+
+  mkdir -p "$current_link"
+  : >"$args_log"
+
+  # Pre-cache a different quant to reproduce false "already cached" behavior.
+  create_gguf_fixture "models--demo--test-GGUF" "test-UD-Q6_K_XL.gguf" 1024
+
+  cat >"${current_link}/llama-cli" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >"$YALLAMA_LLAMA_CLI_ARGS_LOG"
+mkdir -p "$YALLAMA_EXPECTED_CACHE_DIR/snapshots/def456"
+: >"$YALLAMA_EXPECTED_CACHE_DIR/snapshots/def456/$YALLAMA_NEW_QUANT_FILENAME"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-cli"
+
+  export YALLAMA_INSTALL_ROOT="$install_root"
+  export YALLAMA_LLAMA_CLI_ARGS_LOG="$args_log"
+  export YALLAMA_EXPECTED_CACHE_DIR="$cache_dir"
+  export YALLAMA_NEW_QUANT_FILENAME='test-UD-Q4_K_M.gguf'
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_spec"
+
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'pull quant ignores other cached quants' "pull failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if assert_contains "$(cat "$stdout_file")" 'Model already cached'; then
+    fail 'pull quant ignores other cached quants' 'expected pull to fetch missing quant instead of reporting already cached'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" "Done: ${model_spec}"; then
+    fail 'pull quant ignores other cached quants' "expected success for requested quant, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$args_log")" "-hf ${model_spec}"; then
+    fail 'pull quant ignores other cached quants' 'expected pull to invoke llama-cli with requested model:quant'
+    return
+  fi
+
+  if ! ls "$cache_dir"/snapshots/*/test-UD-Q4_K_M.gguf >/dev/null 2>&1; then
+    fail 'pull quant ignores other cached quants' 'expected requested quant file to be present after pull'
+    return
+  fi
+
+  pass 'pull quant ignores other cached quants'
+}
+
 test_status_and_versions() {
   local install_root="${HOME}/install-root"
   local stdout_file="${TEST_DIR}/stdout"
@@ -590,7 +652,8 @@ create_gguf_fixture() {
   dd if=/dev/zero of="${blob_dir}/${blob_hash}" bs=1 count="$blob_size" 2>/dev/null
 
   # Create a symlink in the snapshot pointing to the blob.
-  ln -sf "../../blobs/${blob_hash}" "${snapshot_dir}/${gguf_filename}"
+  mkdir -p "$(dirname "${snapshot_dir}/${gguf_filename}")"
+  ln -sf "${blob_dir}/${blob_hash}" "${snapshot_dir}/${gguf_filename}"
 }
 
 test_list_shows_quant_variants() {
@@ -747,6 +810,90 @@ test_remove_missing_quant_errors() {
   fi
 
   pass 'remove missing quant errors'
+}
+
+test_list_detects_nested_snapshot_quant() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--demo--nested-GGUF" "BF16/nested-BF16.gguf" 1024
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --quiet
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list detects quants in nested snapshot paths' "list --quiet failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" 'demo/nested-GGUF:BF16'; then
+    fail 'list detects quants in nested snapshot paths' "expected nested BF16 quant row, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  pass 'list detects quants in nested snapshot paths'
+}
+
+test_remove_quant_is_case_insensitive() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--demo--case-GGUF" "case-Q4_K_M.gguf" 1024
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove 'demo/case-GGUF:q4-k-m' --force
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'remove quant matching is case-insensitive' "remove failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local hf_hub_dir="${HOME}/.cache/huggingface/hub"
+  if [[ -d "${hf_hub_dir}/models--demo--case-GGUF" ]]; then
+    fail 'remove quant matching is case-insensitive' 'expected model dir to be removed after deleting only quant'
+    return
+  fi
+
+  pass 'remove quant matching is case-insensitive'
+}
+
+test_pull_quant_match_is_case_insensitive() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local args_log="${TEST_DIR}/llama-cli-args.log"
+  local model_spec='demo/case-GGUF:q4-k-m'
+
+  mkdir -p "$current_link"
+  : >"$args_log"
+
+  create_gguf_fixture "models--demo--case-GGUF" "case-Q4_K_M.gguf" 1024
+
+  cat >"${current_link}/llama-cli" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$YALLAMA_LLAMA_CLI_ARGS_LOG"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-cli"
+
+  export YALLAMA_INSTALL_ROOT="$install_root"
+  export YALLAMA_LLAMA_CLI_ARGS_LOG="$args_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_spec"
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'pull quant matching is case-insensitive' "pull failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" "Model already cached: ${model_spec}"; then
+    fail 'pull quant matching is case-insensitive' "expected already-cached message for equivalent quant, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  if [[ -s "$args_log" ]]; then
+    fail 'pull quant matching is case-insensitive' 'expected pull to skip llama-cli when equivalent quant is cached'
+    return
+  fi
+
+  pass 'pull quant matching is case-insensitive'
 }
 
 # ── search tests ─────────────────────────────────────────────────────────────
@@ -2047,6 +2194,9 @@ main() {
   test_pull_noninteractive
 
   setup_test_env
+  test_pull_quant_not_confused_by_other_cached_quant
+
+  setup_test_env
   test_status_and_versions
 
   setup_test_env
@@ -2075,6 +2225,15 @@ main() {
 
   setup_test_env
   test_remove_missing_quant_errors
+
+  setup_test_env
+  test_list_detects_nested_snapshot_quant
+
+  setup_test_env
+  test_remove_quant_is_case_insensitive
+
+  setup_test_env
+  test_pull_quant_match_is_case_insensitive
 
   setup_test_env
   test_search_no_query_errors

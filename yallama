@@ -191,18 +191,34 @@ extract_quant_from_filename() {
   fi
 }
 
-# Find cached GGUF files in a model's HF cache snapshots directory.
-# Prints one basename per line, deduplicated and sorted.
-_find_cached_gguf_files() {
+# Normalize quant tags for robust matching.
+# - Case-insensitive by uppercasing.
+# - Treat '-' and '_' as equivalent by converting '-' to '_'.
+normalize_quant_tag() {
+  local quant="$1"
+  quant="$(printf '%s' "$quant" | tr '[:lower:]' '[:upper:]')"
+  quant="${quant//-/_}"
+  printf '%s\n' "$quant"
+}
+
+# Find cached GGUF file paths in a model's HF cache snapshots directory.
+# Prints one full path per line, deduplicated and sorted.
+_find_cached_gguf_paths() {
   local cache_dir="$1"
   local snapshot_dir
   for snapshot_dir in "$cache_dir"/snapshots/*/; do
     [[ -d "$snapshot_dir" ]] || continue
-    local f
-    for f in "$snapshot_dir"*.gguf; do
-      [[ -f "$f" || -L "$f" ]] || continue
-      basename "$f"
-    done
+    find "$snapshot_dir" \( -type f -o -type l \) -name '*.gguf' -print
+  done | sort -u
+}
+
+# Find cached GGUF files in a model's HF cache snapshots directory.
+# Prints one basename per line, deduplicated and sorted.
+_find_cached_gguf_files() {
+  local cache_dir="$1"
+  _find_cached_gguf_paths "$cache_dir" | while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    basename "$f"
   done | sort -u
 }
 
@@ -211,11 +227,13 @@ _find_cached_gguf_files() {
 _find_gguf_by_quant() {
   local cache_dir="$1"
   local quant="$2"
+  local normalized_quant
+  normalized_quant="$(normalize_quant_tag "$quant")"
   _find_cached_gguf_files "$cache_dir" | while IFS= read -r fname; do
     [[ -z "$fname" ]] && continue
     local tag
     tag="$(extract_quant_from_filename "$fname")"
-    if [[ "$tag" == "$quant" ]]; then
+    if [[ "$(normalize_quant_tag "$tag")" == "$normalized_quant" ]]; then
       printf '%s\n' "$fname"
     fi
   done
@@ -242,30 +260,28 @@ _resolve_link() {
 _remove_quant_files() {
   local cache_dir="$1"
   local quant="$2"
+  local normalized_quant
+  normalized_quant="$(normalize_quant_tag "$quant")"
   local removed=0
-  local snapshot_dir
-  for snapshot_dir in "$cache_dir"/snapshots/*/; do
-    [[ -d "$snapshot_dir" ]] || continue
-    local f
-    for f in "$snapshot_dir"*.gguf; do
-      [[ -f "$f" || -L "$f" ]] || continue
-      local fname tag
-      fname="$(basename "$f")"
-      tag="$(extract_quant_from_filename "$fname")"
-      if [[ "$tag" == "$quant" ]]; then
-        # Delete the backing blob if this is a symlink
-        if [[ -L "$f" ]]; then
-          local blob_path
-          blob_path="$(_resolve_link "$f")"
-          if [[ -f "$blob_path" ]]; then
-            rm -f "$blob_path"
-          fi
+  local f
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    local fname tag
+    fname="$(basename "$f")"
+    tag="$(extract_quant_from_filename "$fname")"
+    if [[ "$(normalize_quant_tag "$tag")" == "$normalized_quant" ]]; then
+      # Delete the backing blob if this is a symlink
+      if [[ -L "$f" ]]; then
+        local blob_path
+        blob_path="$(_resolve_link "$f")"
+        if [[ -f "$blob_path" ]]; then
+          rm -f "$blob_path"
         fi
-        rm -f "$f"
-        removed=$((removed + 1))
       fi
-    done
-  done
+      rm -f "$f"
+      removed=$((removed + 1))
+    fi
+  done < <(_find_cached_gguf_paths "$cache_dir")
   [[ $removed -gt 0 ]]
 }
 
@@ -1456,20 +1472,18 @@ cmd_list() {
     while IFS= read -r tag; do
       [[ -z "$tag" ]] && continue
       # Find all snapshot files matching this quant tag and compute total size.
+      local normalized_tag
+      normalized_tag="$(normalize_quant_tag "$tag")"
       local matching_files=()
-      local snapshot_dir
-      for snapshot_dir in "$dir"snapshots/*/; do
-        [[ -d "$snapshot_dir" ]] || continue
-        local f
-        for f in "$snapshot_dir"*.gguf; do
-          [[ -f "$f" || -L "$f" ]] || continue
-          local ftag
-          ftag="$(extract_quant_from_filename "$(basename "$f")")"
-          if [[ "$ftag" == "$tag" ]]; then
-            matching_files+=("$f")
-          fi
-        done
-      done
+      local f
+      while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        local ftag
+        ftag="$(extract_quant_from_filename "$(basename "$f")")"
+        if [[ "$(normalize_quant_tag "$ftag")" == "$normalized_tag" ]]; then
+          matching_files+=("$f")
+        fi
+      done < <(_find_cached_gguf_paths "$dir")
 
       local size
       if [[ ${#matching_files[@]} -eq 1 ]]; then
@@ -1628,6 +1642,8 @@ cmd_remove() {
 
   if [[ -n "$quant" ]]; then
     # Remove a specific quant variant.
+    local normalized_quant
+    normalized_quant="$(normalize_quant_tag "$quant")"
     local matching_files
     matching_files="$(_find_gguf_by_quant "$cache_dir" "$quant")"
     if [[ -z "$matching_files" ]]; then
@@ -1636,24 +1652,21 @@ cmd_remove() {
 
     # Check only the files belonging to this quant — not the whole model dir,
     # so that a different running quant doesn't block removal of an idle one.
-    local _qsnap _qf _qtag _qblob
-    for _qsnap in "$cache_dir"/snapshots/*/; do
-      [[ -d "$_qsnap" ]] || continue
-      for _qf in "$_qsnap"*.gguf; do
-        [[ -f "$_qf" || -L "$_qf" ]] || continue
-        _qtag="$(extract_quant_from_filename "$(basename "$_qf")")"
-        [[ "$_qtag" == "$quant" ]] || continue
-        if model_is_in_use "$_qf"; then
+    local _qf _qtag _qblob
+    while IFS= read -r _qf; do
+      [[ -z "$_qf" ]] && continue
+      _qtag="$(extract_quant_from_filename "$(basename "$_qf")")"
+      [[ "$(normalize_quant_tag "$_qtag")" == "$normalized_quant" ]] || continue
+      if model_is_in_use "$_qf"; then
+        die "cannot remove '${model_name}:${quant}': it is currently in use by llama-cli or llama-server."
+      fi
+      if [[ -L "$_qf" ]]; then
+        _qblob="$(_resolve_link "$_qf")"
+        if [[ -n "$_qblob" ]] && model_is_in_use "$_qblob"; then
           die "cannot remove '${model_name}:${quant}': it is currently in use by llama-cli or llama-server."
         fi
-        if [[ -L "$_qf" ]]; then
-          _qblob="$(_resolve_link "$_qf")"
-          if [[ -n "$_qblob" ]] && model_is_in_use "$_qblob"; then
-            die "cannot remove '${model_name}:${quant}': it is currently in use by llama-cli or llama-server."
-          fi
-        fi
-      done
-    done
+      fi
+    done < <(_find_cached_gguf_paths "$cache_dir")
 
     confirm_destructive_action "removing quant '${quant}' from '${model_name}'" "$force" || return 1
 
@@ -1916,15 +1929,26 @@ cmd_pull() {
   local model_spec="$1"
   _parse_model_spec "$model_spec"
   local model_name="$REPLY_MODEL"
+  local quant="$REPLY_QUANT"
   local cache_dir
   cache_dir="$(model_name_to_cache_dir "$model_name")"
   ensure_llama_in_path
   require_cmds llama-cli
 
   if [[ -d "$cache_dir" ]]; then
-    echo "Model already cached: $model_spec"
-    echo "  $cache_dir"
-    return 0
+    if [[ -z "$quant" ]]; then
+      echo "Model already cached: $model_spec"
+      echo "  $cache_dir"
+      return 0
+    fi
+
+    local existing_quant_files
+    existing_quant_files="$(_find_gguf_by_quant "$cache_dir" "$quant")"
+    if [[ -n "$existing_quant_files" ]]; then
+      echo "Model already cached: $model_spec"
+      echo "  $cache_dir"
+      return 0
+    fi
   fi
 
   echo "Pulling model: $model_spec"
@@ -1937,16 +1961,29 @@ cmd_pull() {
   local pull_status=0
   llama-cli -hf "$model_spec" "${hf_args[@]+"${hf_args[@]}"}" --no-conversation --single-turn --prompt ' ' --no-display-prompt -n 0 </dev/null || pull_status=$?
 
-  if [[ -d "$cache_dir" ]]; then
-    echo "Done: $model_spec"
-    return 0
+  if [[ -z "$quant" ]]; then
+    if [[ -d "$cache_dir" ]]; then
+      echo "Done: $model_spec"
+      return 0
+    fi
+  else
+    local pulled_quant_files
+    pulled_quant_files="$(_find_gguf_by_quant "$cache_dir" "$quant")"
+    if [[ -n "$pulled_quant_files" ]]; then
+      echo "Done: $model_spec"
+      return 0
+    fi
   fi
 
   if [[ $pull_status -ne 0 ]]; then
     die "pull failed for '${model_spec}' (llama-cli exit ${pull_status}); expected cache dir was not created: ${cache_dir}"
   fi
 
-  die "pull did not create the expected cache dir: ${cache_dir}"
+  if [[ -z "$quant" ]]; then
+    die "pull did not create the expected cache dir: ${cache_dir}"
+  fi
+
+  die "pull did not cache requested quant '${quant}' for model '${model_name}' (cache dir: ${cache_dir})"
 }
 
 # ── run ───────────────────────────────────────────────────────────────────────
