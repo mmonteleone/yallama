@@ -537,7 +537,7 @@ _cmd_profile_set() {
   {
     printf 'model=%s\n' "$model_spec"
     local i=0
-    local _nargs=${#extra_args[@]:-0}
+    local _nargs=${#extra_args[@]}
     while [[ $i -lt $_nargs ]]; do
       local _arg="${extra_args[$i]}"
       local _next=$(( i + 1 ))
@@ -763,7 +763,7 @@ _cmd_profile_template_set() {
       printf 'model=%s\n' "$model_spec"
     fi
     local i=0
-    local _nargs=${#extra_args[@]:-0}
+    local _nargs=${#extra_args[@]}
     while [[ $i -lt $_nargs ]]; do
       local _arg="${extra_args[$i]}"
       local _next=$(( i + 1 ))
