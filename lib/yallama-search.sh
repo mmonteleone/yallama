@@ -82,13 +82,15 @@ cmd_search() {
   # full=true: include sibling (file list) data needed to extract quant names.
   local url="https://huggingface.co/api/models?search=${encoded_query}&library=gguf&sort=${api_sort}&direction=-1&limit=${limit}&full=true"
 
+  # ${auth_header[@]+"${auth_header[@]}"}: safely expand an array that might
+  # be empty under 'set -u'. If auth_header has no elements, this expands to
+  # nothing instead of triggering an "unbound variable" error.
+  # NOTE: this comment intentionally lives outside the $() block — bash
+  # backslash-continuation lines cannot contain inline comments.
   local results
   results="$(curl -fsSL \
     --connect-timeout 15 \
     --max-time 30 \
-    # ${auth_header[@]+"${auth_header[@]}"}: safely expand an array that might
-    # be empty under 'set -u'. If auth_header has no elements, this expands to
-    # nothing instead of triggering an "unbound variable" error.
     "${auth_header[@]+"${auth_header[@]}"}" \
     -H "User-Agent: ${SCRIPT_NAME}" \
     "$url")"

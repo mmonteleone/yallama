@@ -44,3 +44,16 @@ jobs:
       - name: Run smoke tests
         shell: bash
         run: bash tests/smoke.sh
+
+  unit:
+    name: Unit (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run unit tests
+        shell: bash
+        run: bash tests/unit.sh
