@@ -188,15 +188,28 @@ EOF
   chmod +x "$path"
 }
 
-test_standalone_script_is_current() {
+test_generated_standalone_script() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
+  local generated_script="${TEST_DIR}/yallama-standalone"
 
-  run_cmd "$stdout_file" "$stderr_file" bash "${ROOT_DIR}/tools/build-standalone.sh" --check
-  if [[ $RUN_STATUS -eq 0 ]]; then
-    pass 'standalone script is current'
+  run_cmd "$stdout_file" "$stderr_file" bash "${ROOT_DIR}/tools/build-standalone.sh" --output "$generated_script"
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'generated standalone script builds' "expected build to succeed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if grep -q 'source "${SCRIPT_DIR}/lib/' "$generated_script"; then
+    fail 'generated standalone script is self-contained' 'expected generated script to inline module code instead of sourcing lib/*.sh'
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$generated_script" help
+  if [[ $RUN_STATUS -eq 0 ]] && assert_contains "$(cat "$stdout_file")" 'Commands:'; then
+    pass 'generated standalone script builds'
+    pass 'generated standalone script is self-contained'
   else
-    fail 'standalone script is current' "expected generated root script to match src+yallama modules: $(cat "$stderr_file")"
+    fail 'generated standalone script is self-contained' "expected generated script to run standalone help successfully: $(cat "$stderr_file")"
   fi
 }
 
@@ -2193,7 +2206,7 @@ main() {
   }
 
   setup_test_env
-  test_standalone_script_is_current
+  test_generated_standalone_script
   setup_test_env
   test_top_level_help
   test_argument_parsing_errors

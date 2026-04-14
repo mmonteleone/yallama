@@ -9,3 +9,4 @@
 # Local scratch output
 *.log
 tmp/
+dist/

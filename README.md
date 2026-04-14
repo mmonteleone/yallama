@@ -2,7 +2,7 @@
 
 Run local models with the ease of [Ollama](https://ollama.com) and the power of official [llama.cpp](https://github.com/ggml-org/llama.cpp) releases with full [Hugging Face GGUF](https://huggingface.co/models?library=gguf&sort=trending) model access.
 
-Yallama is distributed as a single Bash script that installs official llama.cpp releases, uses the standard Hugging Face cache, and wraps a thin CLI to simulate common Ollama-style flows for interacting with models: *pull*, *run*, *serve*, *list*, *remove*, *update*, etc.
+Tagged Yallama releases ship a single Bash script artifact that installs official llama.cpp releases, uses the standard Hugging Face cache, and wraps a thin CLI to simulate common Ollama-style flows for interacting with models: *pull*, *run*, *serve*, *list*, *remove*, *update*, etc. The repository itself keeps modular Bash sources.
 
 ## Why use it?
 
@@ -24,13 +24,13 @@ Not really.
 System-wide:
 
 ```sh
-sudo curl -fsSL https://raw.githubusercontent.com/mmonteleone/yallama/refs/heads/main/yallama -o /usr/local/bin/yallama && sudo chmod +x /usr/local/bin/yallama
+sudo curl -fsSL https://github.com/mmonteleone/yallama/releases/latest/download/yallama -o /usr/local/bin/yallama && sudo chmod +x /usr/local/bin/yallama
 ```
 
 User-local (no `sudo`):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mmonteleone/yallama/refs/heads/main/yallama -o ~/.local/bin/yallama && chmod +x ~/.local/bin/yallama
+curl -fsSL https://github.com/mmonteleone/yallama/releases/latest/download/yallama -o ~/.local/bin/yallama && chmod +x ~/.local/bin/yallama
 ```
 
 Then install llama.cpp:
@@ -260,9 +260,9 @@ Both steps prompt for confirmation. Add `--force` to skip prompts.
 
 ## Development
 
-The tracked root [yallama](/Users/mmonteleone/source/repos/yallama/yallama) is the standalone distributable script. Its maintainable source lives in [src/yallama.sh](/Users/mmonteleone/source/repos/yallama/src/yallama.sh) plus the domain modules under [lib](/Users/mmonteleone/source/repos/yallama/lib).
+The tracked root [yallama](/Users/mmonteleone/source/repos/yallama/yallama) is the modular source entrypoint. Standalone release artifacts are built from it plus the domain modules under [lib](/Users/mmonteleone/source/repos/yallama/lib).
 
-Regenerate the standalone script after source changes with:
+Generate a standalone release artifact locally with:
 
 ```sh
 bash tools/build-standalone.sh
@@ -271,7 +271,6 @@ bash tools/build-standalone.sh
 ## Validation
 
 ```sh
-bash tools/build-standalone.sh --check
 shellcheck yallama
 bash tests/smoke.sh
 ```

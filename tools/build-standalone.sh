@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEMPLATE_PATH="${ROOT_DIR}/src/yallama.sh"
-DEFAULT_OUTPUT_PATH="${ROOT_DIR}/yallama"
+TEMPLATE_PATH="${ROOT_DIR}/yallama"
+DEFAULT_OUTPUT_PATH="${ROOT_DIR}/dist/yallama"
 
 MODULES=(
   "lib/yallama-cache.sh"
@@ -15,12 +15,11 @@ MODULES=(
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [--output <path> | --stdout | --check]
+Usage: $(basename "$0") [--output <path> | --stdout]
 
 Options:
-  --output <path>  Write the generated standalone script to <path>.
+  --output <path>  Write the generated standalone script to <path>. Default: dist/yallama
   --stdout         Print the generated standalone script to stdout.
-  --check          Exit non-zero if the tracked standalone script is out of date.
 EOF
 }
 
@@ -36,10 +35,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --stdout)
       mode="stdout"
-      shift
-      ;;
-    --check)
-      mode="check"
       shift
       ;;
     -h|--help)
@@ -99,15 +94,8 @@ case "$mode" in
   stdout)
     cat "$tmp_output"
     ;;
-  check)
-    if cmp -s "$tmp_output" "$output_path"; then
-      echo "standalone script is up to date: ${output_path}"
-    else
-      echo "standalone script is out of date: ${output_path}" >&2
-      exit 1
-    fi
-    ;;
   write)
+    mkdir -p "$(dirname "$output_path")"
     cat "$tmp_output" > "$output_path"
     chmod +x "$output_path"
     echo "wrote standalone script: ${output_path}"
