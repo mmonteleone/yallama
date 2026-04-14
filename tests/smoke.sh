@@ -163,8 +163,27 @@ if [[ "$url" == *"/downloads/"* ]]; then
   exit 0
 fi
 
+if [[ "$url" == *"huggingface.co/api/models"* ]]; then
+  fixture="${YALLAMA_TEST_FIXTURES_DIR}/hf-search-results.json"
+  if [[ -f "$fixture" ]]; then
+    cat "$fixture"
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
+
 echo "mock curl: unhandled URL $url" >&2
 exit 1
+EOF
+  chmod +x "$path"
+}
+
+write_mock_open() {
+  local path="$1"
+  cat >"$path" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >>"${YALLAMA_TEST_LOG_DIR}/open.log"
 EOF
   chmod +x "$path"
 }
@@ -179,6 +198,8 @@ setup_test_env() {
 
   mkdir -p "$HOME" "$YALLAMA_TEST_FIXTURES_DIR" "$YALLAMA_TEST_STATE_DIR" "$YALLAMA_TEST_LOG_DIR" "${TEST_DIR}/bin"
   write_mock_curl "${TEST_DIR}/bin/curl"
+  write_mock_open "${TEST_DIR}/bin/open"
+  write_mock_open "${TEST_DIR}/bin/xdg-open"
 }
 
 test_top_level_help() {
@@ -728,6 +749,1284 @@ test_remove_missing_quant_errors() {
   pass 'remove missing quant errors'
 }
 
+# ── search tests ─────────────────────────────────────────────────────────────
+
+write_hf_search_fixture() {
+  local fixtures_dir="$1"
+  cat >"${fixtures_dir}/hf-search-results.json" <<'EOF'
+[
+  {
+    "modelId": "demo/gemma-GGUF",
+    "downloads": 12345,
+    "likes": 42,
+    "siblings": [
+      {"rfilename": "gemma-Q4_K_M.gguf"},
+      {"rfilename": "gemma-Q8_0.gguf"},
+      {"rfilename": "BF16/gemma-BF16-00001-of-00002.gguf"},
+      {"rfilename": "README.md"}
+    ]
+  },
+  {
+    "modelId": "demo/gemma-small-GGUF",
+    "downloads": 6789,
+    "likes": 10,
+    "siblings": [
+      {"rfilename": "gemma-small-F16.gguf"}
+    ]
+  }
+]
+EOF
+}
+
+test_search_no_query_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    pass 'search without query exits non-zero'
+  else
+    fail 'search without query exits non-zero' 'expected non-zero exit when query is omitted'
+  fi
+}
+
+test_search_returns_results() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search returns tabular results' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'MODEL'; then
+    fail 'search returns tabular results' "expected column header 'MODEL', got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'demo/gemma-GGUF'; then
+    fail 'search returns tabular results' "expected 'demo/gemma-GGUF' in output, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'demo/gemma-small-GGUF'; then
+    fail 'search returns tabular results' "expected 'demo/gemma-small-GGUF' in output, got: $out"
+    return
+  fi
+
+  pass 'search returns tabular results'
+}
+
+test_search_quiet() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quiet
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search --quiet prints only names' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'demo/gemma-GGUF'; then
+    fail 'search --quiet prints only names' "expected model name in quiet output, got: $out"
+    return
+  fi
+
+  if assert_contains "$out" 'MODEL'; then
+    fail 'search --quiet prints only names' "unexpected column header in quiet output"
+    return
+  fi
+
+  pass 'search --quiet prints only names'
+}
+
+test_search_json() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --json
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search --json output' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local name_val
+  name_val="$(jq -r '.[0].name' "$stdout_file")"
+  if [[ "$name_val" != 'demo/gemma-GGUF' ]]; then
+    fail 'search --json output' "expected name 'demo/gemma-GGUF', got '$name_val'"
+    return
+  fi
+
+  local dl_val
+  dl_val="$(jq -r '.[0].downloads' "$stdout_file")"
+  if [[ "$dl_val" != '12345' ]]; then
+    fail 'search --json output' "expected downloads '12345', got '$dl_val'"
+    return
+  fi
+
+  pass 'search --json output'
+}
+
+test_search_empty_results() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  # No fixture written — mock returns [] by default.
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search 'xyzzy-nonexistent'
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search empty results' "search failed unexpectedly: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" 'No models found'; then
+    fail 'search empty results' "expected 'No models found' message, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  pass 'search empty results'
+}
+
+test_search_empty_results_json() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search 'xyzzy-nonexistent' --json
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search empty results --json' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local val
+  val="$(cat "$stdout_file" | tr -d '[:space:]')"
+  if [[ "$val" != '[]' ]]; then
+    fail 'search empty results --json' "expected '[]', got: $val"
+    return
+  fi
+
+  pass 'search empty results --json'
+}
+
+test_search_sort_option() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+
+  # Default sort should be trendingScore.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma
+  if ! assert_contains "$(cat "${YALLAMA_TEST_LOG_DIR}/curl.log")" 'sort=trendingScore'; then
+    fail 'search default sort is trending' "expected sort=trendingScore in request URL"
+    return
+  fi
+  pass 'search default sort is trending'
+
+  # --sort downloads should pass sort=downloads to the API.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --sort downloads
+  if ! assert_contains "$(cat "${YALLAMA_TEST_LOG_DIR}/curl.log")" 'sort=downloads'; then
+    fail 'search --sort downloads' "expected sort=downloads in request URL"
+    return
+  fi
+  pass 'search --sort downloads'
+
+  # --sort newest should map to lastModified in the URL.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --sort newest
+  if ! assert_contains "$(cat "${YALLAMA_TEST_LOG_DIR}/curl.log")" 'sort=lastModified'; then
+    fail 'search --sort newest maps to lastModified' "expected sort=lastModified in request URL"
+    return
+  fi
+  pass 'search --sort newest maps to lastModified'
+
+  # Invalid sort value should error.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --sort bogus
+  if [[ $RUN_STATUS -ne 0 ]] && assert_contains "$(cat "$stderr_file")" 'unknown sort value'; then
+    pass 'search --sort rejects invalid value'
+  else
+    fail 'search --sort rejects invalid value' "expected non-zero exit and error for unknown sort"
+  fi
+}
+
+test_search_quants_tabular() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search --quants tabular output' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'Q4_K_M'; then
+    fail 'search --quants tabular output' "expected quant 'Q4_K_M' in output, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'Q8_0'; then
+    fail 'search --quants tabular output' "expected quant 'Q8_0' in output, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'BF16'; then
+    fail 'search --quants tabular output' "expected quant 'BF16' in output (from subdirectory file), got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'F16'; then
+    fail 'search --quants tabular output' "expected quant 'F16' for second model, got: $out"
+    return
+  fi
+
+  pass 'search --quants tabular output'
+}
+
+test_search_quants_quiet() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants --quiet
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search --quants --quiet prints MODEL:QUANT lines' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'demo/gemma-GGUF:Q4_K_M'; then
+    fail 'search --quants --quiet prints MODEL:QUANT lines' "expected 'demo/gemma-GGUF:Q4_K_M', got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'demo/gemma-small-GGUF:F16'; then
+    fail 'search --quants --quiet prints MODEL:QUANT lines' "expected 'demo/gemma-small-GGUF:F16', got: $out"
+    return
+  fi
+
+  pass 'search --quants --quiet prints MODEL:QUANT lines'
+}
+
+test_search_quants_json() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants --json
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search --quants --json quants sorted by bit depth' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  # BF16 (16-bit) should sort before Q8_0 (8-bit) before Q4_K_M (4-bit).
+  local quants
+  quants="$(jq -r '.[0].quants | join(",")' "$stdout_file")"
+  local bf16_pos q8_pos q4_pos
+  bf16_pos="$(jq -r '.[0].quants | index("BF16")' "$stdout_file")"
+  q8_pos="$(jq -r '.[0].quants | index("Q8_0")' "$stdout_file")"
+  q4_pos="$(jq -r '.[0].quants | index("Q4_K_M")' "$stdout_file")"
+
+  if [[ "$bf16_pos" -ge "$q8_pos" || "$q8_pos" -ge "$q4_pos" ]]; then
+    fail 'search --quants --json quants sorted by bit depth' \
+      "expected BF16($bf16_pos) < Q8_0($q8_pos) < Q4_K_M($q4_pos) in: $quants"
+    return
+  fi
+
+  pass 'search --quants --json quants sorted by bit depth'
+}
+
+test_search_default_quant_json() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants --json
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search --quants --json default_quant field' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  # demo/gemma-GGUF has Q4_K_M — llama.cpp picks Q4_K_M first.
+  local dq
+  dq="$(jq -r '.[0].default_quant' "$stdout_file")"
+  if ! assert_eq "$dq" 'Q4_K_M'; then
+    fail 'search --quants --json default_quant field' "expected Q4_K_M, got: $dq"
+    return
+  fi
+
+  # demo/gemma-small-GGUF has only F16 — fallback to first GGUF alphabetically.
+  local dq2
+  dq2="$(jq -r '.[1].default_quant' "$stdout_file")"
+  if ! assert_eq "$dq2" 'F16'; then
+    fail 'search --quants --json default_quant field' "expected F16 for small model, got: $dq2"
+    return
+  fi
+
+  pass 'search --quants --json default_quant field'
+}
+
+test_search_default_quant_tabular() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search --quants tabular marks default quant' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" '*Q4_K_M'; then
+    fail 'search --quants tabular marks default quant' "expected '*Q4_K_M' marker in output, got: $out"
+    return
+  fi
+
+  pass 'search --quants tabular marks default quant'
+}
+
+test_browse_opens_url() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" browse 'demo/test-model'
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'browse opens correct URL' "browse failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local open_log="${YALLAMA_TEST_LOG_DIR}/open.log"
+  if ! assert_contains "$(cat "$open_log" 2>/dev/null)" 'https://huggingface.co/demo/test-model'; then
+    fail 'browse opens correct URL' "expected HF URL in open log, got: $(cat "$open_log" 2>/dev/null)"
+    return
+  fi
+
+  pass 'browse opens correct URL'
+}
+
+test_browse_print_flag() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" browse 'demo/test-model' --print
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'browse --print outputs URL' "browse failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_eq "$out" 'https://huggingface.co/demo/test-model'; then
+    fail 'browse --print outputs URL' "expected HF URL, got: $out"
+    return
+  fi
+
+  pass 'browse --print outputs URL'
+}
+
+test_browse_strips_quant() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" browse 'demo/test-model:Q4_K_M' --print
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'browse strips quant from URL' "browse failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_eq "$out" 'https://huggingface.co/demo/test-model'; then
+    fail 'browse strips quant from URL' "expected URL without quant, got: $out"
+    return
+  fi
+
+  pass 'browse strips quant from URL'
+}
+
+test_browse_no_model_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" browse
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    pass 'browse without model exits non-zero'
+  else
+    fail 'browse without model exits non-zero' 'expected non-zero exit when model is omitted'
+  fi
+}
+
+test_search_bad_argument_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --bogus
+  if [[ $RUN_STATUS -ne 0 ]] && assert_contains "$(cat "$stderr_file")" 'Unknown argument'; then
+    pass 'search rejects unknown arguments'
+  else
+    fail 'search rejects unknown arguments' "expected non-zero exit and error message"
+  fi
+}
+
+# ── profile tests ─────────────────────────────────────────────────────────────
+
+test_profile_set_and_show() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- \
+    --ctx-size 65536 --n-predict 4096 --temp 0.2 -ngl 99
+
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile set creates profile file' "profile set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" "Profile 'coder' saved."; then
+    fail 'profile set creates profile file' "expected success message, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  local profile_file="${YALLAMA_PROFILES_DIR}/coder"
+  if [[ ! -f "$profile_file" ]]; then
+    fail 'profile set creates profile file' "expected profile file at $profile_file"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$profile_file")" 'model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'; then
+    fail 'profile set creates profile file' "expected model= line in profile"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$profile_file")" '--ctx-size'; then
+    fail 'profile set creates profile file' "expected flags in profile"
+    return
+  fi
+
+  pass 'profile set creates profile file'
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile show coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile show prints profile' "profile show failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" 'model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'; then
+    fail 'profile show prints profile' "expected model line in show output"
+    return
+  fi
+
+  pass 'profile show prints profile'
+}
+
+test_profile_list() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set writer \
+    'unsloth/llama-3-8B-it-GGUF:Q4_K_M'
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile list
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile list shows all profiles' "profile list failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'coder'; then
+    fail 'profile list shows all profiles' "expected 'coder' in list, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'writer'; then
+    fail 'profile list shows all profiles' "expected 'writer' in list, got: $out"
+    return
+  fi
+
+  pass 'profile list shows all profiles'
+}
+
+test_profile_list_empty() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles-empty"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile list
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile list empty is not an error' "profile list failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" 'No profiles found'; then
+    fail 'profile list empty is not an error' "expected 'No profiles found', got: $(cat "$stdout_file")"
+    return
+  fi
+
+  pass 'profile list empty is not an error'
+}
+
+test_profile_remove() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile remove coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile remove deletes profile' "profile remove failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ -f "${YALLAMA_PROFILES_DIR}/coder" ]]; then
+    fail 'profile remove deletes profile' "expected profile file to be gone"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" "Profile 'coder' removed."; then
+    fail 'profile remove deletes profile' "expected removal confirmation"
+    return
+  fi
+
+  pass 'profile remove deletes profile'
+}
+
+test_profile_remove_missing_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile remove nonexistent
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'profile remove missing profile errors' 'expected non-zero exit'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" "not found"; then
+    fail 'profile remove missing profile errors' "expected 'not found' error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'profile remove missing profile errors'
+}
+
+test_profile_duplicate() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- --ctx-size 65536 -ngl 99
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile duplicate coder coder-hi-ctx
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile duplicate copies profile' "profile duplicate failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ ! -f "${YALLAMA_PROFILES_DIR}/coder-hi-ctx" ]]; then
+    fail 'profile duplicate copies profile' "expected destination profile file to exist"
+    return
+  fi
+
+  if ! diff -q "${YALLAMA_PROFILES_DIR}/coder" "${YALLAMA_PROFILES_DIR}/coder-hi-ctx" >/dev/null 2>&1; then
+    fail 'profile duplicate copies profile' "expected source and destination to have identical contents"
+    return
+  fi
+
+  pass 'profile duplicate copies profile'
+}
+
+test_profile_duplicate_dest_exists_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder2 \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL'
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile duplicate coder coder2
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'profile duplicate refuses overwrite' 'expected non-zero exit when destination exists'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'already exists'; then
+    fail 'profile duplicate refuses overwrite' "expected 'already exists' error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'profile duplicate refuses overwrite'
+}
+
+test_profile_invalid_name_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set 'bad name' 'demo/model'
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'profile set rejects invalid name' 'expected non-zero exit for name with space'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'invalid profile name'; then
+    fail 'profile set rejects invalid name' "expected 'invalid profile name' error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'profile set rejects invalid name'
+}
+
+test_profile_overwrite() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- --ctx-size 32768
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- --ctx-size 65536
+
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile set overwrites existing' "second set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "${YALLAMA_PROFILES_DIR}/coder")" '--ctx-size'; then
+    fail 'profile set overwrites existing' "expected flags in overwritten profile"
+    return
+  fi
+
+  # The old value 32768 should not appear; 65536 should.
+  if assert_contains "$(cat "${YALLAMA_PROFILES_DIR}/coder")" '32768'; then
+    fail 'profile set overwrites existing' "expected old ctx-size 32768 to be gone after overwrite"
+    return
+  fi
+
+  pass 'profile set overwrites existing'
+}
+
+test_run_with_profile() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local run_args_log="${TEST_DIR}/run-args.log"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export YALLAMA_INSTALL_ROOT="$install_root"
+
+  mkdir -p "$current_link"
+  cat >"${current_link}/llama-cli" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$YALLAMA_RUN_ARGS_LOG"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-cli"
+  export YALLAMA_RUN_ARGS_LOG="$run_args_log"
+  unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- \
+    --ctx-size 65536 --temp 0.2 -ngl 99
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'run with profile resolves model and flags' "run coder failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local args
+  args="$(cat "$run_args_log")"
+
+  if ! assert_contains "$args" '-hf unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'; then
+    fail 'run with profile resolves model and flags' "expected model spec in args, got: $args"
+    return
+  fi
+
+  if ! assert_contains "$args" '--ctx-size'; then
+    fail 'run with profile resolves model and flags' "expected --ctx-size in args, got: $args"
+    return
+  fi
+
+  if ! assert_contains "$args" '-ngl 99'; then
+    fail 'run with profile resolves model and flags' "expected -ngl 99 in args, got: $args"
+    return
+  fi
+
+  pass 'run with profile resolves model and flags'
+}
+
+test_serve_with_profile() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local serve_args_log="${TEST_DIR}/serve-args.log"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export YALLAMA_INSTALL_ROOT="$install_root"
+
+  mkdir -p "$current_link"
+  cat >"${current_link}/llama-server" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$YALLAMA_SERVE_ARGS_LOG"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-server"
+  export YALLAMA_SERVE_ARGS_LOG="$serve_args_log"
+  unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- \
+    --ctx-size 65536 --temp 0.2 -ngl 99
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'serve with profile resolves model and flags' "serve coder failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local args
+  args="$(cat "$serve_args_log")"
+
+  if ! assert_contains "$args" '-hf unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'; then
+    fail 'serve with profile resolves model and flags' "expected model spec in args, got: $args"
+    return
+  fi
+
+  if ! assert_contains "$args" '--jinja'; then
+    fail 'serve with profile resolves model and flags' "expected --jinja in args, got: $args"
+    return
+  fi
+
+  if ! assert_contains "$args" '--ctx-size'; then
+    fail 'serve with profile resolves model and flags' "expected --ctx-size in args, got: $args"
+    return
+  fi
+
+  pass 'serve with profile resolves model and flags'
+}
+
+test_serve_with_profile_and_extra_args() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local serve_args_log="${TEST_DIR}/serve-args.log"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export YALLAMA_INSTALL_ROOT="$install_root"
+
+  mkdir -p "$current_link"
+  cat >"${current_link}/llama-server" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$YALLAMA_SERVE_ARGS_LOG"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-server"
+  export YALLAMA_SERVE_ARGS_LOG="$serve_args_log"
+  unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
+    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- \
+    --ctx-size 65536 -ngl 99
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve coder -- --port 8081
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'serve with profile appends extra args' "serve coder -- --port 8081 failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local args
+  args="$(cat "$serve_args_log")"
+
+  if ! assert_contains "$args" '--port 8081'; then
+    fail 'serve with profile appends extra args' "expected --port 8081 in args, got: $args"
+    return
+  fi
+
+  if ! assert_contains "$args" '--ctx-size'; then
+    fail 'serve with profile appends extra args' "expected profile --ctx-size still present, got: $args"
+    return
+  fi
+
+  pass 'serve with profile appends extra args'
+}
+
+test_run_missing_profile_errors() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles-empty"
+  export YALLAMA_INSTALL_ROOT="$install_root"
+  mkdir -p "$current_link"
+  cat >"${current_link}/llama-cli" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "${current_link}/llama-cli"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run nonexistent-profile
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'run with missing profile errors' 'expected non-zero exit'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'not found'; then
+    fail 'run with missing profile errors' "expected 'not found' error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'run with missing profile errors'
+}
+
+test_profile_command_sections() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local run_args_log="${TEST_DIR}/run-args.log"
+  local serve_args_log="${TEST_DIR}/serve-args.log"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export YALLAMA_INSTALL_ROOT="$install_root"
+  unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
+
+  mkdir -p "$current_link"
+  cat >"${current_link}/llama-cli" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$YALLAMA_RUN_ARGS_LOG"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-cli"
+
+  cat >"${current_link}/llama-server" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$YALLAMA_SERVE_ARGS_LOG"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-server"
+
+  export YALLAMA_RUN_ARGS_LOG="$run_args_log"
+  export YALLAMA_SERVE_ARGS_LOG="$serve_args_log"
+
+  # Write a profile with common flags and per-command sections.
+  mkdir -p "$YALLAMA_PROFILES_DIR"
+  cat >"${YALLAMA_PROFILES_DIR}/coder" <<'PROFILE'
+model=demo/model:Q4_K
+--temp 0.2
+-ngl 99
+[serve]
+--ctx-size 65536
+--cache-reuse 256
+[run]
+--ctx-size 32768
+PROFILE
+
+  # serve: should include common + [serve] flags, not [run] flags.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile [serve] section included for serve' "serve coder failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local sargs
+  sargs="$(cat "$serve_args_log")"
+
+  if ! assert_contains "$sargs" '--temp 0.2'; then
+    fail 'profile [serve] section included for serve' "expected common flag --temp in serve args, got: $sargs"
+    return
+  fi
+
+  if ! assert_contains "$sargs" '--cache-reuse'; then
+    fail 'profile [serve] section included for serve' "expected [serve] flag --cache-reuse in serve args, got: $sargs"
+    return
+  fi
+
+  if assert_contains "$sargs" '32768'; then
+    fail 'profile [serve] section excluded for serve' "expected [run] flag --ctx-size 32768 NOT in serve args, got: $sargs"
+    return
+  fi
+
+  pass 'profile [serve] section included for serve'
+  pass 'profile [serve] section excluded for serve'
+
+  # run: should include common + [run] flags, not [serve] flags.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile [run] section included for run' "run coder failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local rargs
+  rargs="$(cat "$run_args_log")"
+
+  if ! assert_contains "$rargs" '--temp 0.2'; then
+    fail 'profile [run] section included for run' "expected common flag --temp in run args, got: $rargs"
+    return
+  fi
+
+  if ! assert_contains "$rargs" '32768'; then
+    fail 'profile [run] section included for run' "expected [run] flag --ctx-size 32768 in run args, got: $rargs"
+    return
+  fi
+
+  if assert_contains "$rargs" '--cache-reuse'; then
+    fail 'profile [run] section excluded for run' "expected [serve] flag --cache-reuse NOT in run args, got: $rargs"
+    return
+  fi
+
+  pass 'profile [run] section included for run'
+  pass 'profile [run] section excluded for run'
+}
+
+test_profile_new_builtin_with_model() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  unset YALLAMA_TEMPLATES_DIR
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new mycoder code user/qwen2.5:Q4_K
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile new from builtin with model' "command failed: $(cat "$stderr_file")"
+    return
+  fi
+  if ! assert_contains "$(cat "$stdout_file")" "created from template"; then
+    fail 'profile new from builtin with model' "expected success message, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile show mycoder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile new from builtin with model' "show failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local content
+  content="$(cat "$stdout_file")"
+  if ! assert_contains "$content" "model=user/qwen2.5:Q4_K"; then
+    fail 'profile new from builtin with model' "expected model line, got: $content"
+    return
+  fi
+  if ! assert_contains "$content" "--temp 0.2"; then
+    fail 'profile new from builtin with model' "expected code template flag --temp, got: $content"
+    return
+  fi
+  if ! assert_contains "$content" "-ngl 999"; then
+    fail 'profile new from builtin with model' "expected code template flag -ngl, got: $content"
+    return
+  fi
+
+  pass 'profile new from builtin with model'
+}
+
+test_profile_new_builtin_no_model_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  unset YALLAMA_TEMPLATES_DIR
+
+  # 'code' built-in has no model= line; no model arg provided → should error.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new mycoder code
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'profile new builtin no model errors' "expected failure when no model provided"
+    return
+  fi
+  if ! assert_contains "$(cat "$stderr_file")" "no model specified"; then
+    fail 'profile new builtin no model errors' "expected 'no model specified' error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'profile new builtin no model errors'
+}
+
+test_profile_new_user_template() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+
+  # Create a user-defined template with a default model.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-set mytemplate user/mymodel:Q4_K -- --temp 0.5 --ctx-size 4096
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile new from user template' "template-set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  # Create a profile from it (no model arg — should use template's default).
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new myprofile mytemplate
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile new from user template' "profile new failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile show myprofile
+  local content
+  content="$(cat "$stdout_file")"
+  if ! assert_contains "$content" "model=user/mymodel:Q4_K"; then
+    fail 'profile new from user template' "expected default model from template, got: $content"
+    return
+  fi
+  if ! assert_contains "$content" "--temp 0.5"; then
+    fail 'profile new from user template' "expected template flag --temp, got: $content"
+    return
+  fi
+
+  pass 'profile new from user template'
+}
+
+test_profile_new_overwrite_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  unset YALLAMA_TEMPLATES_DIR
+
+  # Create it once.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new mypro code user/model
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile new overwrite errors' "first create failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  # Try to create again — should fail.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new mypro code user/model
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'profile new overwrite errors' "expected failure when profile already exists"
+    return
+  fi
+  if ! assert_contains "$(cat "$stderr_file")" "already exists"; then
+    fail 'profile new overwrite errors' "expected 'already exists' error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'profile new overwrite errors'
+}
+
+test_profile_templates_lists_builtins() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  unset YALLAMA_TEMPLATES_DIR
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile templates
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile templates lists builtins' "command failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  for tname in chat code; do
+    if ! assert_contains "$out" "$tname"; then
+      fail 'profile templates lists builtins' "expected '$tname' in output, got: $out"
+      return
+    fi
+  done
+  if ! assert_contains "$out" "built-in"; then
+    fail 'profile templates lists builtins' "expected 'built-in' label in output, got: $out"
+    return
+  fi
+
+  pass 'profile templates lists builtins'
+}
+
+test_profile_template_show_builtin() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  unset YALLAMA_TEMPLATES_DIR
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-show code
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile template-show builtin' "command failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" "--temp 0.2"; then
+    fail 'profile template-show builtin' "expected '--temp 0.2' in code template, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" "-ngl 999"; then
+    fail 'profile template-show builtin' "expected '-ngl 999' in code template, got: $out"
+    return
+  fi
+
+  pass 'profile template-show builtin'
+}
+
+test_profile_template_set_and_show() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-set mywork user/work-model -- --temp 0.3 --ctx-size 8192
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile template-set and show' "template-set failed: $(cat "$stderr_file")"
+    return
+  fi
+  if ! assert_contains "$(cat "$stdout_file")" "saved"; then
+    fail 'profile template-set and show' "expected 'saved' message, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-show mywork
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile template-set and show' "template-show failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" "model=user/work-model"; then
+    fail 'profile template-set and show' "expected model line, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" "--temp 0.3"; then
+    fail 'profile template-set and show' "expected --temp 0.3, got: $out"
+    return
+  fi
+
+  pass 'profile template-set and show'
+}
+
+test_profile_template_remove() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-set mytmp -- --temp 0.5
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile template-remove' "template-set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-remove mytmp
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile template-remove' "template-remove failed: $(cat "$stderr_file")"
+    return
+  fi
+  if ! assert_contains "$(cat "$stdout_file")" "removed"; then
+    fail 'profile template-remove' "expected 'removed' message, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  # Subsequent show should fail.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-show mytmp
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'profile template-remove' "expected show to fail after removal"
+    return
+  fi
+
+  pass 'profile template-remove'
+}
+
+test_profile_template_remove_builtin_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  unset YALLAMA_TEMPLATES_DIR
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-remove chat
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'profile template-remove builtin errors' "expected failure when removing built-in template"
+    return
+  fi
+  if ! assert_contains "$(cat "$stderr_file")" "built-in"; then
+    fail 'profile template-remove builtin errors' "expected 'built-in' in error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'profile template-remove builtin errors'
+}
+
+test_profile_template_user_overrides_builtin() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+
+  # Write a user template named 'code' that overrides the built-in.
+  mkdir -p "$YALLAMA_TEMPLATES_DIR"
+  cat >"${YALLAMA_TEMPLATES_DIR}/code" <<'EOF'
+--temp 0.9
+--ctx-size 1024
+EOF
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-show code
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile user template overrides builtin' "template-show failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  # User file has --temp 0.9 (not 0.1 from built-in).
+  if ! assert_contains "$out" "--temp 0.9"; then
+    fail 'profile user template overrides builtin' "expected user template --temp 0.9, got: $out"
+    return
+  fi
+  if assert_contains "$out" "--temp 0.1"; then
+    fail 'profile user template overrides builtin' "expected built-in content to be shadowed, got: $out"
+    return
+  fi
+
+  pass 'profile user template overrides builtin'
+}
+
 main() {
   command -v jq >/dev/null 2>&1 || {
     echo 'jq is required to run smoke tests.' >&2
@@ -776,6 +2075,129 @@ main() {
 
   setup_test_env
   test_remove_missing_quant_errors
+
+  setup_test_env
+  test_search_no_query_errors
+
+  setup_test_env
+  test_search_returns_results
+
+  setup_test_env
+  test_search_quiet
+
+  setup_test_env
+  test_search_json
+
+  setup_test_env
+  test_search_empty_results
+
+  setup_test_env
+  test_search_empty_results_json
+
+  setup_test_env
+  test_search_sort_option
+
+  setup_test_env
+  test_search_quants_tabular
+
+  setup_test_env
+  test_search_quants_quiet
+
+  setup_test_env
+  test_search_quants_json
+
+  setup_test_env
+  test_search_default_quant_json
+
+  setup_test_env
+  test_search_default_quant_tabular
+
+  setup_test_env
+  test_browse_opens_url
+
+  setup_test_env
+  test_browse_print_flag
+
+  setup_test_env
+  test_browse_strips_quant
+
+  setup_test_env
+  test_browse_no_model_errors
+
+  setup_test_env
+  test_search_bad_argument_errors
+
+  setup_test_env
+  test_profile_set_and_show
+
+  setup_test_env
+  test_profile_list
+
+  setup_test_env
+  test_profile_list_empty
+
+  setup_test_env
+  test_profile_remove
+
+  setup_test_env
+  test_profile_remove_missing_errors
+
+  setup_test_env
+  test_profile_duplicate
+
+  setup_test_env
+  test_profile_duplicate_dest_exists_errors
+
+  setup_test_env
+  test_profile_invalid_name_errors
+
+  setup_test_env
+  test_profile_overwrite
+
+  setup_test_env
+  test_run_with_profile
+
+  setup_test_env
+  test_serve_with_profile
+
+  setup_test_env
+  test_serve_with_profile_and_extra_args
+
+  setup_test_env
+  test_run_missing_profile_errors
+
+  setup_test_env
+  test_profile_command_sections
+
+  setup_test_env
+  test_profile_new_builtin_with_model
+
+  setup_test_env
+  test_profile_new_builtin_no_model_errors
+
+  setup_test_env
+  test_profile_new_user_template
+
+  setup_test_env
+  test_profile_new_overwrite_errors
+
+  setup_test_env
+  test_profile_templates_lists_builtins
+
+  setup_test_env
+  test_profile_template_show_builtin
+
+  setup_test_env
+  test_profile_template_set_and_show
+
+  setup_test_env
+  test_profile_template_remove
+
+  setup_test_env
+  test_profile_template_remove_builtin_errors
+
+  setup_test_env
+  test_profile_template_user_overrides_builtin
 
   printf '\n'
   printf 'Passed: %s\n' "$PASS_COUNT"

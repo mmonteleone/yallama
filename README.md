@@ -11,6 +11,7 @@ Yallama is a single Bash script that installs official llama.cpp releases, uses 
 - Broad Hugging Face model registry, not easily reached through Ollama
 - Built-in chat UI and OpenAI API endpoint compatibility thanks to `llama-server`
 - Command, model, and quant shell completions for fish, zsh, and bash
+- Templated profiles for common model usage
 - No always-on daemon
 - Standard HF cache, so downloaded models are visible to other tools
 
@@ -71,16 +72,29 @@ yallama run unsloth/gemma-4-26B-A4B-it-GGUF -- -ngl 999 -c 8192
 yallama serve unsloth/gemma-4-26B-A4B-it-GGUF -- --port 8081
 ```
 
+Or use a saved profile:
+
+```sh
+# Save a profile
+yallama profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
+  --ctx-size 65536 --temp 0.2 --top-k 20 -ngl 999
+
+# Use it — model and flags are loaded automatically
+yallama serve coder
+yallama run coder -- --temp 0.5   # extra flags appended, overriding profile
+```
+
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `install` | Install llama.cpp |
-| `run <MODEL[:QUANT]>` | Download model if needed, start chat via `llama-cli` |
-| `serve <MODEL[:QUANT]>` | Download model if needed, start chat and API server via `llama-server` |
+| `run <MODEL[:QUANT]\|PROFILE>` | Download model if needed, start chat via `llama-cli` |
+| `serve <MODEL[:QUANT]\|PROFILE>` | Download model if needed, start chat and API server via `llama-server` |
 | `pull <MODEL[:QUANT]>` | Download a model (or specific quant) without running it |
 | `list` / `ls` | List downloaded models, including per-quant rows for GGUF variants |
 | `remove <MODEL[:QUANT]>` / `rm <MODEL[:QUANT]>` | Delete an entire model or just one quant variant |
+| `profile` | Manage named run/serve profiles |
 | `status` | Show installed version and optionally check for updates |
 | `update` | Update llama.cpp to the latest release |
 | `versions` | List installed llama.cpp versions |
@@ -117,19 +131,108 @@ yallama ls --json
 
 Models are stored in the standard Hugging Face cache under `~/.cache/huggingface/hub/`.
 
+## Profiles
+
+Profiles let you give a name to a model + flags combination and use it in place of a model spec:
+
+```sh
+yallama profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
+  --ctx-size 65536 \
+  --n-predict 4096 \
+  --temp 0.2 \
+  --top-k 20 \
+  --repeat-penalty 1.05 \
+  --flash-attn on \
+  -ngl 999
+
+yallama serve coder
+```
+
+Profile subcommands:
+
+| Subcommand | What it does |
+|---|---|
+| `profile set <NAME> <MODEL> [-- <flags>]` | Create or replace a profile |
+| `profile list` | List all saved profiles |
+| `profile show <NAME>` | Print a profile's contents |
+| `profile remove <NAME>` | Delete a profile |
+| `profile duplicate <SOURCE> <DEST>` | Copy a profile to a new name |
+| `profile new <NAME> <TEMPLATE> [<MODEL>]` | Create a profile from a template |
+| `profile templates` | List all available templates |
+| `profile template-show <TEMPLATE>` | Print a template's contents |
+| `profile template-set <TEMPLATE> [<MODEL>] [-- <flags>]` | Create or replace a user-defined template |
+| `profile template-remove <TEMPLATE>` | Delete a user-defined template |
+
+Profiles are stored as plain text files in `~/.config/yallama/profiles/`. Each file has a `model=` line followed by one flag-and-value pair per line:
+
+```
+model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
+--temp 0.2
+--flash-attn on
+-ngl 999
+```
+
+Some flags are only valid for one command — for example, `--cache-reuse` is only supported by `llama-server` (`serve`), not `llama-cli` (`run`). Use `[serve]` and `[run]` section headers to scope flags to the appropriate command. Flags before any section header are passed to both:
+
+```
+model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
+# common flags (passed to both run and serve)
+--ctx-size 65536
+--n-predict 4096
+--temp 0.2
+--top-k 20
+--repeat-penalty 1.05
+--flash-attn on
+-ngl 999
+
+[serve]
+# only passed to llama-server
+--cache-reuse 256
+```
+
+Section headers are added by editing the profile file directly. `profile set` creates a flat (no-section) profile.
+
+### Templates
+
+Templates are reusable flag presets that you can use to quickly create profiles. Yallama includes a couple built-in templates:
+
+| Template | Best for | Key flags |
+|---|---|---|
+| `chat` | Conversational use | `--temp 0.8 --ctx-size 8192` |
+| `code` | Coding assistants | `--temp 0.2 --ctx-size 65536` |
+
+Create a profile from a built-in template by supplying the model:
+
+```sh
+yallama profile new mycoder code unsloth/Qwen3.5-27B-GGUF:UD-Q5_K_XL
+yallama run mycoder
+```
+
+If a template includes a `model=` line (user-defined templates can embed one), the model argument is optional:
+
+```sh
+# Create a team template with a pinned model and shared flags
+yallama profile template-set work-chat user/our-llm:Q4_K -- --temp 0.6 --ctx-size 16384
+
+# Create profiles from it — model comes from the template
+yallama profile new alice-chat work-chat
+yallama profile new bob-chat work-chat
+
+# Override the model for a specific profile
+yallama profile new test-chat work-chat user/new-llm:Q4_K
+```
+
+Templates are stored as plain text files in `~/.config/yallama/templates/` and have the same format as profiles (`model=` is optional). Built-in templates are always available and cannot be removed, but a user-defined template with the same name takes precedence.
+
 ## Configuration
 
-`YALLAMA_INSTALL_ROOT` overrides the directory where llama.cpp is installed. Used by `run`, `serve`, and `pull` to locate binaries.
+Environmental variables:
 
-```sh
-export YALLAMA_INSTALL_ROOT=/opt/llama.cpp
-```
+- `YALLAMA_INSTALL_ROOT`: overrides the directory where llama.cpp is installed. Used by `run`, `serve`, and `pull` to locate binaries.
+- `YALLAMA_PROFILES_DIR`: overrides the directory where profiles are stored. Defaults to `~/.config/yallama/profiles`.
+- `YALLAMA_TEMPLATES_DIR`: overrides the directory where user-defined templates are stored. Defaults to `~/.config/yallama/templates`.
+- `HF_TOKEN`: is passed through for private or gated Hugging Face models. `HF_HUB_TOKEN` and `HUGGING_FACE_HUB_TOKEN` also work.
 
-`HF_TOKEN` is passed through for private or gated Hugging Face models. `HF_HUB_TOKEN` and `HUGGING_FACE_HUB_TOKEN` also work.
-
-```sh
-export HF_TOKEN=hf_your_token_here
-```
 
 ## Uninstall
 

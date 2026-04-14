@@ -29,6 +29,8 @@ set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
 DEFAULT_INSTALL_ROOT="${HOME}/.llama.cpp"
+DEFAULT_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+DEFAULT_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
 HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
 SHELL_PROFILE_EDIT_DECISION=""
 YALLAMA_VERSION="0.1.1"
@@ -267,6 +269,539 @@ _remove_quant_files() {
   [[ $removed -gt 0 ]]
 }
 
+# ── profiles ──────────────────────────────────────────────────────────────────
+
+# Return the resolved profiles directory (env override or default).
+_profiles_dir() {
+  local dir="${YALLAMA_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}"
+  dir="${dir/#\~/$HOME}"
+  printf '%s' "$dir"
+}
+
+# Return the path for a named profile file.
+_profile_path() {
+  local name="$1"
+  printf '%s/%s' "$(_profiles_dir)" "$name"
+}
+
+# Return the resolved templates directory (env override or default).
+_templates_dir() {
+  local dir="${YALLAMA_TEMPLATES_DIR:-$DEFAULT_TEMPLATES_DIR}"
+  dir="${dir/#\~/$HOME}"
+  printf '%s' "$dir"
+}
+
+# Return the path for a named template file.
+_template_path() {
+  local name="$1"
+  printf '%s/%s' "$(_templates_dir)" "$name"
+}
+
+# Print the content of a built-in template, or return 1 if the name is unknown.
+_get_builtin_template_content() {
+  local name="$1"
+  case "$name" in
+    chat)
+      printf '%s\n' \
+        '--temp 0.8' \
+        '--ctx-size 8192' \
+        '--flash-attn on' \
+        '-ngl 999'
+      ;;
+    code)
+      printf '%s\n' \
+        '--ctx-size 65536' \
+        '--n-predict 4096' \
+        '--temp 0.2' \
+        '--top-k 20' \
+        '--repeat-penalty 1.05' \
+        '--flash-attn on' \
+        '-ngl 999' \
+        '[serve]' \
+        '--cache-reuse 256'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Print the content of a template (user-defined takes precedence over built-in).
+# Dies if the template is not found by either source.
+_get_template_content() {
+  local name="$1"
+  local path
+  path="$(_template_path "$name")"
+  if [[ -f "$path" ]]; then
+    cat "$path"
+  elif _get_builtin_template_content "$name"; then
+    :
+  else
+    die "template '${name}' not found"
+  fi
+}
+
+# Validate a template name: alphanumeric, hyphens, underscores only.
+_validate_template_name() {
+  local name="$1"
+  if [[ -z "$name" || "$name" =~ [^a-zA-Z0-9_-] ]]; then
+    die "invalid template name '${name}': use only letters, digits, hyphens, and underscores"
+  fi
+}
+
+# Validate a profile name: alphanumeric, hyphens, underscores only.
+_validate_profile_name() {
+  local name="$1"
+  if [[ -z "$name" || "$name" =~ [^a-zA-Z0-9_-] ]]; then
+    die "invalid profile name '${name}': use only letters, digits, hyphens, and underscores"
+  fi
+}
+
+# Load a profile file.
+# Usage: _load_profile <name> [run|serve]
+# Sets REPLY_PROFILE_MODEL and REPLY_PROFILE_ARGS (array).
+#
+# Profile files may contain optional [run] and [serve] section headers.
+# Flags before any header are common to both commands.
+# Flags under [run] are included only when mode is "run".
+# Flags under [serve] are included only when mode is "serve".
+_load_profile() {
+  local name="$1"
+  local mode="${2:-}"   # "run", "serve", or empty (include all)
+  local path
+  path="$(_profile_path "$name")"
+  [[ -f "$path" ]] || die "profile '${name}' not found (${path})"
+
+  REPLY_PROFILE_MODEL=""
+  REPLY_PROFILE_ARGS=()
+
+  # Current section: "common", "run", or "serve".
+  local section="common"
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Strip trailing whitespace and skip blank lines and comments.
+    line="${line%%*( )}"
+    [[ -z "$line" || "$line" == '#'* ]] && continue
+
+    # Section headers.
+    if [[ "$line" == '[run]' ]];   then section="run";   continue; fi
+    if [[ "$line" == '[serve]' ]]; then section="serve"; continue; fi
+
+    if [[ "$line" == model=* ]]; then
+      REPLY_PROFILE_MODEL="${line#model=}"
+      continue
+    fi
+
+    # Include the line if it is in the common section, or its section matches
+    # the requested mode, or no mode filter was requested.
+    if [[ "$section" == "common" || -z "$mode" || "$section" == "$mode" ]]; then
+      read -ra _flag_words <<< "$line"
+      REPLY_PROFILE_ARGS+=("${_flag_words[@]}")
+    fi
+  done < "$path"
+
+  [[ -n "$REPLY_PROFILE_MODEL" ]] || die "profile '${name}' has no 'model=' line"
+}
+
+cmd_profile_usage() {
+  cat <<EOF
+Usage: $SCRIPT_NAME profile set <NAME> <MODEL_SPEC> [-- <flags...>]
+       $SCRIPT_NAME profile list
+       $SCRIPT_NAME profile show <NAME>
+       $SCRIPT_NAME profile remove <NAME>
+       $SCRIPT_NAME profile duplicate <SOURCE> <DEST>
+       $SCRIPT_NAME profile new <NAME> <TEMPLATE> [<MODEL_SPEC>]
+       $SCRIPT_NAME profile templates
+       $SCRIPT_NAME profile template-show <TEMPLATE>
+       $SCRIPT_NAME profile template-set <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]
+       $SCRIPT_NAME profile template-remove <TEMPLATE>
+
+Subcommands:
+  set <NAME> <MODEL_SPEC> [-- <flags...>]
+      Create or replace a named profile. MODEL_SPEC is user/model[:quant].
+      Pass llama-cli / llama-server flags after '--'. All flags are written
+      to the common section (applied to both run and serve). To add
+      command-specific flags, edit the profile file directly and add
+      [run] or [serve] section headers.
+
+  list
+      List all saved profiles.
+
+  show <NAME>
+      Print the profile's model and flags.
+
+  remove <NAME>
+      Delete a profile.
+
+  duplicate <SOURCE> <DEST>
+      Copy an existing profile to a new name.
+
+  new <NAME> <TEMPLATE> [<MODEL_SPEC>]
+      Create a new profile from a template. MODEL_SPEC overrides any default
+      model embedded in the template. Errors if the profile already exists.
+
+  templates
+      List all available templates (built-in and user-defined).
+
+  template-show <TEMPLATE>
+      Print the content of a template.
+
+  template-set <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]
+      Create or replace a user-defined template. MODEL_SPEC is optional.
+
+  template-remove <TEMPLATE>
+      Delete a user-defined template. Built-in templates cannot be removed.
+
+Profiles are stored in: \${YALLAMA_PROFILES_DIR:-~/.config/yallama/profiles}
+Templates are stored in: \${YALLAMA_TEMPLATES_DIR:-~/.config/yallama/templates}
+
+Built-in templates: chat, code
+
+Optional [run] and [serve] section headers in a profile file scope flags to
+only that command. Flags before any section header apply to both.
+Example profile file:
+  model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
+  --ctx-size 65536
+  --n-predict 4096
+  --temp 0.2
+  --top-k 20
+  --repeat-penalty 1.05
+  --flash-attn on
+  -ngl 999
+  [serve]
+  --cache-reuse 256
+
+Use a profile name instead of a model spec with 'run' or 'serve':
+  $SCRIPT_NAME serve coder
+
+Create a profile from a built-in template:
+  $SCRIPT_NAME  profile new mycoder code unsloth/Qwen3.5-27B-GGUF:UD-Q5_K_XL
+EOF
+}
+
+cmd_profile() {
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    cmd_profile_usage
+    [[ $# -eq 0 ]] && return 1 || return 0
+  fi
+
+  local subcmd="$1"
+  shift
+
+  case "$subcmd" in
+    set)             _cmd_profile_set "$@" ;;
+    list)            _cmd_profile_list "$@" ;;
+    show)            _cmd_profile_show "$@" ;;
+    remove)          _cmd_profile_remove "$@" ;;
+    duplicate)       _cmd_profile_duplicate "$@" ;;
+    new)             _cmd_profile_new "$@" ;;
+    templates)       _cmd_profile_templates "$@" ;;
+    template-show)   _cmd_profile_template_show "$@" ;;
+    template-set)    _cmd_profile_template_set "$@" ;;
+    template-remove) _cmd_profile_template_remove "$@" ;;
+    -h|--help) cmd_profile_usage; return 0 ;;
+    *)
+      echo "Unknown profile subcommand: $subcmd" >&2
+      cmd_profile_usage >&2
+      return 1
+      ;;
+  esac
+}
+
+_cmd_profile_set() {
+  if [[ $# -lt 2 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $SCRIPT_NAME profile set <NAME> <MODEL_SPEC> [-- <flags...>]" >&2
+    [[ $# -lt 2 ]] && return 1 || return 0
+  fi
+
+  local name="$1"
+  local model_spec="$2"
+  shift 2
+
+  _validate_profile_name "$name"
+
+  local extra_args=()
+  if [[ $# -gt 0 ]]; then
+    [[ "$1" == "--" ]] || die "expected '--' before flags, got: $1"
+    shift
+    extra_args=("$@")
+  fi
+
+  local profiles_dir
+  profiles_dir="$(_profiles_dir)"
+  mkdir -p "$profiles_dir"
+
+  local path
+  path="$(_profile_path "$name")"
+
+  {
+    printf 'model=%s\n' "$model_spec"
+    local i=0
+    local _nargs=${#extra_args[@]}
+    while [[ $i -lt $_nargs ]]; do
+      local _arg="${extra_args[$i]}"
+      local _next=$(( i + 1 ))
+      # Group a flag with its value on one line (e.g. "--ctx-size 65536", "-ngl 999").
+      # A following token that doesn't start with '-' is treated as the flag's value.
+      if [[ "$_arg" == -* ]] && [[ $_next -lt $_nargs ]] && [[ "${extra_args[$_next]}" != -* ]]; then
+        printf '%s %s\n' "$_arg" "${extra_args[$_next]}"
+        i=$(( i + 2 ))
+      else
+        printf '%s\n' "$_arg"
+        i=$(( i + 1 ))
+      fi
+    done
+  } > "$path"
+
+  echo "Profile '${name}' saved."
+}
+
+_cmd_profile_list() {
+  local profiles_dir
+  profiles_dir="$(_profiles_dir)"
+
+  if [[ ! -d "$profiles_dir" ]]; then
+    echo "No profiles found."
+    return 0
+  fi
+
+  local found=0
+  local f
+  for f in "$profiles_dir"/*; do
+    [[ -f "$f" ]] || continue
+    local name model_line
+    name="$(basename "$f")"
+    model_line="$(grep '^model=' "$f" 2>/dev/null | head -1)"
+    model_line="${model_line#model=}"
+    printf '%-20s  %s\n' "$name" "$model_line"
+    found=1
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    echo "No profiles found."
+  fi
+}
+
+_cmd_profile_show() {
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $SCRIPT_NAME profile show <NAME>" >&2
+    [[ $# -eq 0 ]] && return 1 || return 0
+  fi
+
+  local name="$1"
+  _validate_profile_name "$name"
+
+  local path
+  path="$(_profile_path "$name")"
+  [[ -f "$path" ]] || die "profile '${name}' not found"
+
+  cat "$path"
+}
+
+_cmd_profile_remove() {
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $SCRIPT_NAME profile remove <NAME>" >&2
+    [[ $# -eq 0 ]] && return 1 || return 0
+  fi
+
+  local name="$1"
+  _validate_profile_name "$name"
+
+  local path
+  path="$(_profile_path "$name")"
+  [[ -f "$path" ]] || die "profile '${name}' not found"
+
+  rm -f "$path"
+  echo "Profile '${name}' removed."
+}
+
+_cmd_profile_duplicate() {
+  if [[ $# -lt 2 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $SCRIPT_NAME profile duplicate <SOURCE> <DEST>" >&2
+    [[ $# -lt 2 ]] && return 1 || return 0
+  fi
+
+  local src="$1"
+  local dst="$2"
+
+  _validate_profile_name "$src"
+  _validate_profile_name "$dst"
+
+  local src_path dst_path
+  src_path="$(_profile_path "$src")"
+  dst_path="$(_profile_path "$dst")"
+
+  [[ -f "$src_path" ]] || die "source profile '${src}' not found"
+  [[ ! -f "$dst_path" ]] || die "destination profile '${dst}' already exists; remove it first"
+
+  cp "$src_path" "$dst_path"
+  echo "Profile '${src}' duplicated to '${dst}'."
+}
+
+_cmd_profile_new() {
+  if [[ $# -lt 2 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $SCRIPT_NAME profile new <NAME> <TEMPLATE> [<MODEL_SPEC>]" >&2
+    [[ $# -lt 2 ]] && return 1 || return 0
+  fi
+
+  local name="$1"
+  local template_name="$2"
+  local model_arg="${3:-}"
+
+  _validate_profile_name "$name"
+  _validate_template_name "$template_name"
+
+  local template_content
+  template_content="$(_get_template_content "$template_name")"
+
+  # Resolve model: explicit arg > model= from template > error.
+  local model=""
+  if [[ -n "$model_arg" ]]; then
+    model="$model_arg"
+  else
+    local tline
+    while IFS= read -r tline; do
+      if [[ "$tline" == model=* ]]; then
+        model="${tline#model=}"
+        break
+      fi
+    done <<< "$template_content"
+  fi
+  [[ -n "$model" ]] || die "no model specified: provide a MODEL_SPEC argument or add 'model=' to the template"
+
+  local profiles_dir
+  profiles_dir="$(_profiles_dir)"
+  local path
+  path="$(_profile_path "$name")"
+
+  [[ ! -f "$path" ]] || die "profile '${name}' already exists; remove it first or use 'profile set' to overwrite"
+
+  mkdir -p "$profiles_dir"
+
+  {
+    printf 'model=%s\n' "$model"
+    while IFS= read -r tline; do
+      # Skip any model= line from the template (model is already written above).
+      [[ "$tline" == model=* ]] && continue
+      printf '%s\n' "$tline"
+    done <<< "$template_content"
+  } > "$path"
+
+  echo "Profile '${name}' created from template '${template_name}'."
+}
+
+_cmd_profile_templates() {
+  local -a builtin_names=( chat code )
+  local templates_dir
+  templates_dir="$(_templates_dir)"
+
+  printf '%-20s  %-10s  %s\n' 'NAME' 'TYPE' 'DEFAULT MODEL'
+  printf '%-20s  %-10s  %s\n' '----' '----' '-------------'
+
+  for bname in "${builtin_names[@]}"; do
+    printf '%-20s  %-10s  %s\n' "$bname" 'built-in' '(none)'
+  done
+
+  if [[ -d "$templates_dir" ]]; then
+    local f
+    for f in "$templates_dir"/*; do
+      [[ -f "$f" ]] || continue
+      local tname model_line
+      tname="$(basename "$f")"
+      model_line="$(grep '^model=' "$f" 2>/dev/null | head -1)"
+      model_line="${model_line#model=}"
+      printf '%-20s  %-10s  %s\n' "$tname" 'user' "${model_line:-(none)}"
+    done
+  fi
+}
+
+_cmd_profile_template_show() {
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $SCRIPT_NAME profile template-show <TEMPLATE>" >&2
+    [[ $# -eq 0 ]] && return 1 || return 0
+  fi
+
+  local name="$1"
+  _validate_template_name "$name"
+  _get_template_content "$name"
+}
+
+_cmd_profile_template_set() {
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $SCRIPT_NAME profile template-set <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]" >&2
+    [[ $# -eq 0 ]] && return 1 || return 0
+  fi
+
+  local name="$1"
+  shift
+
+  _validate_template_name "$name"
+
+  # If the next positional arg doesn't start with '-' and isn't '--', treat as model spec.
+  local model_spec=""
+  if [[ $# -gt 0 && "$1" != "--" && "$1" != -* ]]; then
+    model_spec="$1"
+    shift
+  fi
+
+  local extra_args=()
+  if [[ $# -gt 0 ]]; then
+    [[ "$1" == "--" ]] || die "expected '--' before flags, got: $1"
+    shift
+    extra_args=("$@")
+  fi
+
+  local templates_dir
+  templates_dir="$(_templates_dir)"
+  mkdir -p "$templates_dir"
+
+  local path
+  path="$(_template_path "$name")"
+
+  {
+    if [[ -n "$model_spec" ]]; then
+      printf 'model=%s\n' "$model_spec"
+    fi
+    local i=0
+    local _nargs=${#extra_args[@]}
+    while [[ $i -lt $_nargs ]]; do
+      local _arg="${extra_args[$i]}"
+      local _next=$(( i + 1 ))
+      if [[ "$_arg" == -* ]] && [[ $_next -lt $_nargs ]] && [[ "${extra_args[$_next]}" != -* ]]; then
+        printf '%s %s\n' "$_arg" "${extra_args[$_next]}"
+        i=$(( i + 2 ))
+      else
+        printf '%s\n' "$_arg"
+        i=$(( i + 1 ))
+      fi
+    done
+  } > "$path"
+
+  echo "Template '${name}' saved."
+}
+
+_cmd_profile_template_remove() {
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: $SCRIPT_NAME profile template-remove <TEMPLATE>" >&2
+    [[ $# -eq 0 ]] && return 1 || return 0
+  fi
+
+  local name="$1"
+  _validate_template_name "$name"
+
+  # Refuse to remove built-in templates.
+  if _get_builtin_template_content "$name" >/dev/null 2>&1; then
+    die "cannot remove built-in template '${name}'"
+  fi
+
+  local path
+  path="$(_template_path "$name")"
+  [[ -f "$path" ]] || die "template '${name}' not found"
+
+  rm -f "$path"
+  echo "Template '${name}' removed."
+}
+
 # ── help ──────────────────────────────────────────────────────────────────────
 
 cmd_help() {
@@ -280,20 +815,25 @@ Commands:
   prune                Remove old llama.cpp versions, keeping current
   uninstall            Uninstall llama.cpp
   status               Show installed and latest available version
+  search <QUERY>       Search HuggingFace for compatible GGUF models
+  browse <MODEL_NAME>  Open a model's HuggingFace page in your browser
   pull <MODEL_NAME>    Download a HuggingFace model without running it
   list (ls)            List downloaded HuggingFace models and quant variants
   remove (rm)          Remove a downloaded model or specific quant variant
   run <MODEL_NAME>     Download and run a HuggingFace model
   serve <MODEL_NAME>   Download and serve a HuggingFace model
   ps                   Show running llama-cli / llama-server processes
+  profile              Manage named run/serve profiles
   version (--version)  Show yallama version
   help (h, ?)          Show this help
 
 Environment:
-  YALLAMA_INSTALL_ROOT  Override the default installation root (~/.llama.cpp).
-                        Applies to: run, serve, pull.
-  HF_TOKEN              HuggingFace access token for private or gated models.
-                        Also checked: HF_HUB_TOKEN, HUGGING_FACE_HUB_TOKEN.
+  YALLAMA_INSTALL_ROOT   Override the default installation root (~/.llama.cpp).
+                         Applies to: run, serve, pull.
+  YALLAMA_PROFILES_DIR   Override the default profiles directory (~/.config/yallama/profiles).
+  YALLAMA_TEMPLATES_DIR  Override the default user templates directory (~/.config/yallama/templates).
+  HF_TOKEN               HuggingFace access token for private or gated models.
+                         Also checked: HF_HUB_TOKEN, HUGGING_FACE_HUB_TOKEN.
 
 Run '$SCRIPT_NAME <command> --help' for command-specific help.
 EOF
@@ -1086,10 +1626,6 @@ cmd_remove() {
     die "model not found: ${model_name} (expected at ${cache_dir})"
   fi
 
-  if model_is_in_use "$cache_dir"; then
-    die "cannot remove '${model_name}': it is currently in use by llama-cli or llama-server."
-  fi
-
   if [[ -n "$quant" ]]; then
     # Remove a specific quant variant.
     local matching_files
@@ -1097,6 +1633,27 @@ cmd_remove() {
     if [[ -z "$matching_files" ]]; then
       die "no cached files matching quant '${quant}' found for model '${model_name}'"
     fi
+
+    # Check only the files belonging to this quant — not the whole model dir,
+    # so that a different running quant doesn't block removal of an idle one.
+    local _qsnap _qf _qtag _qblob
+    for _qsnap in "$cache_dir"/snapshots/*/; do
+      [[ -d "$_qsnap" ]] || continue
+      for _qf in "$_qsnap"*.gguf; do
+        [[ -f "$_qf" || -L "$_qf" ]] || continue
+        _qtag="$(extract_quant_from_filename "$(basename "$_qf")")"
+        [[ "$_qtag" == "$quant" ]] || continue
+        if model_is_in_use "$_qf"; then
+          die "cannot remove '${model_name}:${quant}': it is currently in use by llama-cli or llama-server."
+        fi
+        if [[ -L "$_qf" ]]; then
+          _qblob="$(_resolve_link "$_qf")"
+          if [[ -n "$_qblob" ]] && model_is_in_use "$_qblob"; then
+            die "cannot remove '${model_name}:${quant}': it is currently in use by llama-cli or llama-server."
+          fi
+        fi
+      done
+    done
 
     confirm_destructive_action "removing quant '${quant}' from '${model_name}'" "$force" || return 1
 
@@ -1112,6 +1669,9 @@ cmd_remove() {
     fi
     echo "Done."
   else
+    if model_is_in_use "$cache_dir"; then
+      die "cannot remove '${model_name}': it is currently in use by llama-cli or llama-server."
+    fi
     # Remove entire model (all quants).
     # Enumerate quant variants so the user knows exactly what will be deleted.
     local all_quants quant_list=()
@@ -1144,14 +1704,204 @@ cmd_remove() {
   fi
 }
 
+# ── search ────────────────────────────────────────────────────────────────────
+
+cmd_search_usage() {
+  cat <<EOF
+Usage: $SCRIPT_NAME search <QUERY> [--sort <by>] [--limit <n>] [--quants] [--quiet] [--json]
+
+Arguments:
+  QUERY         Search term (e.g. "gemma", "qwen", "llama")
+
+Searches HuggingFace for GGUF models compatible with llama.cpp.
+
+Options:
+  --sort <by>   Sort order: trending (default), downloads, likes, newest.
+  --limit <n>   Maximum number of results. Defaults to 20.
+  --quants      Also show available quant variants per model.
+                With --quiet: prints one MODEL:QUANT per line.
+                With --json: adds a quants array field per model.
+  --quiet       Print only model identifiers, one per line.
+  --json        Output as a JSON array with name, downloads, and likes fields.
+EOF
+}
+
+# jq def: extracts sorted unique quant tags from a model's siblings array.
+# Handles subdirectory paths (e.g. BF16/model-BF16.gguf) and split files.
+# Usage: prepend to any jq expression; call as `quants` on a model object.
+# shellcheck disable=SC2016  # $ signs are jq regex anchors, not bash variables
+_jq_quants_def='def quant_rank: if test("^F32$") then -32 elif test("^(BF16|F16)$") then -16 elif test("^(?:[A-Z]{2}[-_])?I?Q[0-9]+") then (capture("^(?:[A-Z]{2}[-_])?I?Q(?<n>[0-9]+)") | .n | tonumber | -.) else 0 end; def quants: [.siblings[]? | select(.rfilename | test("[.]gguf$")) | .rfilename | split("/") | last | gsub("[.]gguf$"; "") | gsub("-[0-9]+-of-[0-9]+$"; "") | capture("[-._](?<q>(?:[A-Z]{2}[-_])?(?:I?Q[0-9]+(?:_[A-Z0-9]+)*|F16|BF16|F32))$")? | .q] | unique | sort_by(quant_rank); def default_quant: [.siblings[]? | select(.rfilename | test("[.]gguf$")) | .rfilename] as $files | ((([$files[] | select(test("Q4_K_M[.-]"; "i"))] | sort | .[0]) // ([$files[] | select(test("Q4_0[.-]"; "i"))] | sort | .[0]) // ($files | sort | .[0])) as $f | if $f != null then (($f | split("/") | last | gsub("[.]gguf$"; "") | gsub("-[0-9]+-of-[0-9]+$"; "")) as $stem | (($stem | capture("[-._](?<q>(?:[A-Z]{2}[-_])?(?:I?Q[0-9]+(?:_[A-Z0-9]+)*|F16|BF16|F32))$")? | .q) // $stem)) else null end);'
+
+cmd_search() {
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    cmd_search_usage
+    [[ $# -eq 0 ]] && return 1 || return 0
+  fi
+
+  local query="$1"
+  shift
+
+  local sort_by="trending"
+  local limit=20
+  local quants="false"
+  local quiet="false"
+  local json="false"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --sort)    sort_by="${2:-}"; shift 2 ;;
+      --limit)   limit="${2:-}"; shift 2 ;;
+      --quants)  quants="true"; shift ;;
+      --quiet)   quiet="true"; shift ;;
+      --json)    json="true"; shift ;;
+      -h|--help) cmd_search_usage; return 0 ;;
+      *)         echo "Unknown argument: $1" >&2; cmd_search_usage >&2; return 1 ;;
+    esac
+  done
+
+  local api_sort
+  case "$sort_by" in
+    trending)  api_sort="trendingScore" ;;
+    downloads) api_sort="downloads" ;;
+    likes)     api_sort="likes" ;;
+    newest)    api_sort="lastModified" ;;
+    *)         die "unknown sort value '${sort_by}': must be trending, downloads, likes, or newest" ;;
+  esac
+
+  require_cmds curl jq
+
+  local hf_token="${HF_TOKEN:-${HF_HUB_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}}"
+  local auth_header=()
+  [[ -n "$hf_token" ]] && auth_header=(-H "Authorization: Bearer ${hf_token}")
+
+  local encoded_query
+  encoded_query="$(printf '%s' "$query" | jq -Rr @uri)"
+
+  local url="https://huggingface.co/api/models?search=${encoded_query}&library=gguf&sort=${api_sort}&direction=-1&limit=${limit}&full=true"
+
+  local results
+  results="$(curl -fsSL \
+    --connect-timeout 15 \
+    --max-time 30 \
+    "${auth_header[@]+"${auth_header[@]}"}" \
+    -H "User-Agent: ${SCRIPT_NAME}" \
+    "$url")"
+
+  local count
+  count="$(printf '%s' "$results" | jq 'length')"
+
+  if [[ "$count" -eq 0 ]]; then
+    if [[ "$json" == "true" ]]; then
+      echo "[]"
+    else
+      echo "No models found for: $query"
+    fi
+    return 0
+  fi
+
+  if [[ "$json" == "true" ]]; then
+    if [[ "$quants" == "true" ]]; then
+      printf '%s' "$results" | jq "${_jq_quants_def}"'
+        [.[] | select(quants | length > 0) | {name: .modelId, downloads: .downloads, likes: .likes, quants: quants, default_quant: default_quant}]'
+    else
+      printf '%s' "$results" | jq "${_jq_quants_def}"'
+        [.[] | select(quants | length > 0) | {name: .modelId, downloads: .downloads, likes: .likes}]'
+    fi
+  elif [[ "$quiet" == "true" ]]; then
+    if [[ "$quants" == "true" ]]; then
+      printf '%s' "$results" | jq -r "${_jq_quants_def}"'
+        .[] | select(quants | length > 0) | .modelId as $m | quants[] | $m + ":" + .'
+    else
+      printf '%s' "$results" | jq -r "${_jq_quants_def}"'
+        .[] | select(quants | length > 0) | .modelId'
+    fi
+  else
+    printf '%-60s  %10s  %s\n' 'MODEL' 'DOWNLOADS' 'LIKES'
+    printf '%-60s  %10s  %s\n' '-----' '---------' '-----'
+    if [[ "$quants" == "true" ]]; then
+      printf '%s' "$results" \
+        | jq -r "${_jq_quants_def}"'
+            .[] | select(quants | length > 0) | [.modelId, (.downloads // 0 | tostring), (.likes // 0 | tostring), (default_quant as $dq | quants | map(if . == $dq then "*" + . else . end) | join(" "))] | @tsv' \
+        | while IFS=$'\t' read -r name downloads likes qtags; do
+            printf '%-60s  %10s  %s\n' "$name" "$downloads" "$likes"
+            [[ -n "$qtags" ]] && printf '  %s\n' "$qtags"
+          done
+    else
+      printf '%s' "$results" \
+        | jq -r "${_jq_quants_def}"'
+            .[] | select(quants | length > 0) | [.modelId, (.downloads // 0 | tostring), (.likes // 0 | tostring)] | @tsv' \
+        | while IFS=$'\t' read -r name downloads likes; do
+            printf '%-60s  %10s  %s\n' "$name" "$downloads" "$likes"
+          done
+    fi
+  fi
+}
+
+# ── browse ────────────────────────────────────────────────────────────────────
+
+cmd_browse_usage() {
+  cat <<EOF
+Usage: $SCRIPT_NAME browse <MODEL_NAME> [--print]
+
+Arguments:
+  MODEL_NAME    HuggingFace model identifier, e.g. unsloth/gemma-4-26B-A4B-it-GGUF
+
+Opens the HuggingFace page for a model in your browser.
+
+Options:
+  --print       Print the URL instead of opening a browser.
+EOF
+}
+
+cmd_browse() {
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    cmd_browse_usage
+    [[ $# -eq 0 ]] && return 1 || return 0
+  fi
+
+  local model_spec="$1"
+  local print_only="false"
+  shift
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --print)   print_only="true"; shift ;;
+      -h|--help) cmd_browse_usage; return 0 ;;
+      *)         echo "Unknown argument: $1" >&2; cmd_browse_usage >&2; return 1 ;;
+    esac
+  done
+
+  _parse_model_spec "$model_spec"
+  local model_name="$REPLY_MODEL"
+  local url="https://huggingface.co/${model_name}"
+
+  if [[ "$print_only" == "true" ]]; then
+    echo "$url"
+    return 0
+  fi
+
+  local open_cmd=""
+  case "$(uname -s)" in
+    Darwin) open_cmd="open" ;;
+    Linux)  open_cmd="xdg-open" ;;
+  esac
+
+  if [[ -n "$open_cmd" ]] && command -v "$open_cmd" >/dev/null 2>&1; then
+    "$open_cmd" "$url"
+  else
+    echo "$url"
+  fi
+}
+
 # ── pull ──────────────────────────────────────────────────────────────────────
 
 cmd_pull_usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME pull <MODEL_NAME>
+Usage: $SCRIPT_NAME pull <MODEL_NAME[:QUANT]>
 
 Arguments:
   MODEL_NAME    HuggingFace model identifier, e.g. unsloth/gemma-4-26B-A4B-it-GGUF
+  QUANT         Optional quant tag to download a specific variant (e.g. Q4_K_M, UD-Q6_K).
 
 Downloads (pre-warms) a HuggingFace model into the local cache without running it.
 EOF
@@ -1163,19 +1913,21 @@ cmd_pull() {
     [[ $# -eq 0 ]] && return 1 || return 0
   fi
 
-  local model_name="$1"
+  local model_spec="$1"
+  _parse_model_spec "$model_spec"
+  local model_name="$REPLY_MODEL"
   local cache_dir
   cache_dir="$(model_name_to_cache_dir "$model_name")"
   ensure_llama_in_path
   require_cmds llama-cli
 
   if [[ -d "$cache_dir" ]]; then
-    echo "Model already cached: $model_name"
+    echo "Model already cached: $model_spec"
     echo "  $cache_dir"
     return 0
   fi
 
-  echo "Pulling model: $model_name"
+  echo "Pulling model: $model_spec"
   # Force a non-conversation single turn with a non-empty placeholder prompt so
   # llama-cli downloads into the HF cache and exits instead of entering chat
   # mode on models that advertise a chat template by default.
@@ -1183,15 +1935,15 @@ cmd_pull() {
   local hf_args=()
   [[ -n "$hf_token" ]] && hf_args=(--hf-token "$hf_token")
   local pull_status=0
-  llama-cli -hf "$model_name" "${hf_args[@]+"${hf_args[@]}"}" --no-conversation --single-turn --prompt ' ' --no-display-prompt -n 0 </dev/null || pull_status=$?
+  llama-cli -hf "$model_spec" "${hf_args[@]+"${hf_args[@]}"}" --no-conversation --single-turn --prompt ' ' --no-display-prompt -n 0 </dev/null || pull_status=$?
 
   if [[ -d "$cache_dir" ]]; then
-    echo "Done: $model_name"
+    echo "Done: $model_spec"
     return 0
   fi
 
   if [[ $pull_status -ne 0 ]]; then
-    die "pull failed for '${model_name}' (llama-cli exit ${pull_status}); expected cache dir was not created: ${cache_dir}"
+    die "pull failed for '${model_spec}' (llama-cli exit ${pull_status}); expected cache dir was not created: ${cache_dir}"
   fi
 
   die "pull did not create the expected cache dir: ${cache_dir}"
@@ -1201,15 +1953,21 @@ cmd_pull() {
 
 cmd_run_usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME run <MODEL_NAME> [-- <llama-cli args...>]
+Usage: $SCRIPT_NAME run <MODEL_NAME|PROFILE> [-- <llama-cli args...>]
 
 Arguments:
   MODEL_NAME    HuggingFace model identifier, e.g. unsloth/gemma-4-26B-A4B-it-GGUF
+  PROFILE       A saved profile name (see: $SCRIPT_NAME profile list)
 
 Downloads the model if needed and runs it interactively via llama-cli.
+When a profile is given, its model and flags are used automatically.
 
-Pass additional llama-cli arguments after '--'. Example:
+Pass additional llama-cli arguments after '--'. These are appended after any
+profile flags and will override profile flags when the same flag appears twice.
+Example:
   $SCRIPT_NAME run unsloth/gemma-4-E4B-it-GGUF -- -ngl 999 -c 8192
+  $SCRIPT_NAME run coder
+  $SCRIPT_NAME run coder -- --temp 0.5
 EOF
 }
 
@@ -1219,7 +1977,7 @@ cmd_run() {
     [[ $# -eq 0 ]] && return 1 || return 0
   fi
 
-  local model_name="$1"
+  local model_spec="$1"
   shift
   local extra_args=()
   if [[ $# -gt 0 ]]; then
@@ -1232,27 +1990,43 @@ cmd_run() {
     extra_args=("$@")
   fi
 
+  # If the spec has no '/', treat it as a profile name.
+  local profile_args=()
+  if [[ "$model_spec" != */* ]]; then
+    _load_profile "$model_spec" run
+    model_spec="$REPLY_PROFILE_MODEL"
+    profile_args=("${REPLY_PROFILE_ARGS[@]+"${REPLY_PROFILE_ARGS[@]}"}")
+  fi
+
   ensure_llama_in_path
   require_cmds llama-cli
   local hf_token="${HF_TOKEN:-${HF_HUB_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}}"
   local hf_args=()
   [[ -n "$hf_token" ]] && hf_args=(--hf-token "$hf_token")
-  exec llama-cli -hf "$model_name" "${hf_args[@]+"${hf_args[@]}"}" "${extra_args[@]+"${extra_args[@]}"}"
+  exec llama-cli -hf "$model_spec" "${hf_args[@]+"${hf_args[@]}"}" \
+    "${profile_args[@]+"${profile_args[@]}"}" \
+    "${extra_args[@]+"${extra_args[@]}"}"
 }
 
 # ── serve ─────────────────────────────────────────────────────────────────────
 
 cmd_serve_usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME serve <MODEL_NAME> [-- <llama-server args...>]
+Usage: $SCRIPT_NAME serve <MODEL_NAME|PROFILE> [-- <llama-server args...>]
 
 Arguments:
   MODEL_NAME    HuggingFace model identifier, e.g. unsloth/gemma-4-26B-A4B-it-GGUF
+  PROFILE       A saved profile name (see: $SCRIPT_NAME profile list)
 
 Downloads the model if needed and serves it via llama-server with Jinja templates.
+When a profile is given, its model and flags are used automatically.
 
-Pass additional llama-server arguments after '--'. Example:
+Pass additional llama-server arguments after '--'. These are appended after any
+profile flags and will override profile flags when the same flag appears twice.
+Example:
   $SCRIPT_NAME serve unsloth/gemma-4-E4B-it-GGUF -- --port 8081
+  $SCRIPT_NAME serve coder
+  $SCRIPT_NAME serve coder -- --port 8081
 EOF
 }
 
@@ -1262,7 +2036,7 @@ cmd_serve() {
     [[ $# -eq 0 ]] && return 1 || return 0
   fi
 
-  local model_name="$1"
+  local model_spec="$1"
   shift
   local extra_args=()
   if [[ $# -gt 0 ]]; then
@@ -1275,12 +2049,23 @@ cmd_serve() {
     extra_args=("$@")
   fi
 
+  # If the spec has no '/', treat it as a profile name.
+  local profile_args=()
+  if [[ "$model_spec" != */* ]]; then
+    _load_profile "$model_spec" serve
+    model_spec="$REPLY_PROFILE_MODEL"
+    profile_args=("${REPLY_PROFILE_ARGS[@]+"${REPLY_PROFILE_ARGS[@]}"}")
+  fi
+
   ensure_llama_in_path
   require_cmds llama-server
   local hf_token="${HF_TOKEN:-${HF_HUB_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}}"
   local hf_args=()
   [[ -n "$hf_token" ]] && hf_args=(--hf-token "$hf_token")
-  exec llama-server -hf "$model_name" --jinja "${hf_args[@]+"${hf_args[@]}"}" "${extra_args[@]+"${extra_args[@]}"}"
+  exec llama-server -hf "$model_spec" --jinja \
+    "${hf_args[@]+"${hf_args[@]}"}" \
+    "${profile_args[@]+"${profile_args[@]}"}" \
+    "${extra_args[@]+"${extra_args[@]}"}"
 }
 
 # ── ps ────────────────────────────────────────────────────────────────────────
@@ -1477,7 +2262,7 @@ _completions_fish() {
   cat <<EOF
 # Fish completions for $sn  (generated by: $sn install)
 
-set -l commands install update versions prune uninstall status pull list ls remove rm run serve ps help
+set -l commands install update versions prune uninstall status search browse pull list ls remove rm run serve ps profile help
 
 # Disable file completion for all subcommands.
 complete -c $sn -f
@@ -1489,6 +2274,8 @@ complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a versions  -d 
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a prune     -d 'Remove old llama.cpp versions'
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a uninstall -d 'Uninstall llama.cpp'
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a status    -d 'Show installed version'
+complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a search    -d 'Search HuggingFace for compatible GGUF models'
+complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a browse    -d 'Open a model HuggingFace page in browser'
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a pull      -d 'Download a model without running'
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a list      -d 'List cached models'
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a ls        -d 'List cached models (alias)'
@@ -1497,6 +2284,7 @@ complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a rm        -d 
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a run       -d 'Run a model'
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a serve     -d 'Serve a model'
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a ps        -d 'Show running llama processes'
+complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a profile   -d 'Manage named run/serve profiles'
 complete -c $sn -n "not __fish_seen_subcommand_from \$commands" -a help      -d 'Show help'
 
 # Flags per subcommand.
@@ -1512,12 +2300,43 @@ complete -c $sn -n "__fish_seen_subcommand_from uninstall"   -l self            
 complete -c $sn -n "__fish_seen_subcommand_from uninstall remove rm prune" -l force    -d 'Skip confirmation prompt'
 complete -c $sn -n "__fish_seen_subcommand_from list ls"     -l quiet            -d 'Only print names'
 complete -c $sn -n "__fish_seen_subcommand_from list ls"     -l json             -d 'JSON output'
+complete -c $sn -n "__fish_seen_subcommand_from search"      -l sort             -d 'Sort order (trending, downloads, likes, newest)'
+complete -c $sn -n "__fish_seen_subcommand_from search"      -l limit            -d 'Maximum number of results'
+complete -c $sn -n "__fish_seen_subcommand_from search"      -l quants           -d 'Show available quant variants'
+complete -c $sn -n "__fish_seen_subcommand_from search"      -l quiet            -d 'Only print model identifiers'
+complete -c $sn -n "__fish_seen_subcommand_from search"      -l json             -d 'JSON output'
+complete -c $sn -n "__fish_seen_subcommand_from browse"      -l print            -d 'Print URL instead of opening browser'
+complete -c $sn -n "__fish_seen_subcommand_from browse run serve pull remove rm" -a "(__yallama_cached_models)"
+complete -c $sn -n "__fish_seen_subcommand_from run serve"   -a "(__yallama_profiles)"
+
+# Profile subcommand completions.
+set -l profile_subcmds set list show remove duplicate new templates template-show template-set template-remove
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a set             -d 'Create or replace a profile'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a list            -d 'List all profiles'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a show            -d 'Print a profile'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a remove          -d 'Delete a profile'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a duplicate       -d 'Copy a profile to a new name'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a new             -d 'Create a profile from a template'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a templates       -d 'List available templates'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a template-show   -d 'Print a template'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a template-set    -d 'Create or replace a user-defined template'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a template-remove -d 'Delete a user-defined template'
+complete -c $sn -n "__fish_seen_subcommand_from profile; and __fish_seen_subcommand_from show remove duplicate" -a "(__yallama_profiles)"
+complete -c $sn -n "__fish_seen_subcommand_from profile; and __fish_seen_subcommand_from template-show template-remove" -a "(__yallama_templates)"
+complete -c $sn -n "__fish_seen_subcommand_from profile; and __fish_seen_subcommand_from new" -a "(__yallama_templates) (__yallama_cached_models)"
 
 # Model name completion for commands that take MODEL_NAME[:QUANT].
 function __yallama_cached_models
   yallama ls --quiet 2>/dev/null
 end
-complete -c $sn -n "__fish_seen_subcommand_from run serve pull remove rm" -a "(__yallama_cached_models)"
+
+function __yallama_profiles
+  yallama profile list 2>/dev/null | awk 'NF==2{print \$1}'
+end
+
+function __yallama_templates
+  yallama profile templates 2>/dev/null | awk 'NR>2 {print \$1}'
+end
 EOF
 }
 
@@ -1531,6 +2350,18 @@ _yallama_cached_models() {
   local specs
   specs=(${(f)"$(yallama ls --quiet 2>/dev/null)"})
   (( ${#specs[@]} )) && _values 'model[:quant]' "${specs[@]}"
+}
+
+_yallama_profiles() {
+  local names
+  names=(${(f)"$(yallama profile list 2>/dev/null | awk 'NF==2{print $1}')"})
+  (( ${#names[@]} )) && _values 'profile' "${names[@]}"
+}
+
+_yallama_templates() {
+  local names
+  names=(${(f)"$(yallama profile templates 2>/dev/null | awk 'NR>2 {print $1}')"})
+  (( ${#names[@]} )) && _values 'template' "${names[@]}"
 }
 
 _yallama() {
@@ -1547,12 +2378,15 @@ _yallama() {
         'prune:Remove old llama.cpp versions'
         'uninstall:Uninstall llama.cpp'
         'status:Show installed version'
+        'search:Search HuggingFace for compatible GGUF models'
+        'browse:Open a model HuggingFace page in browser'
         'pull:Download a model without running'
         'list:List cached models' 'ls:List cached models'
         'remove:Remove a cached model' 'rm:Remove a cached model'
         'run:Run a model'
         'serve:Serve a model'
         'ps:Show running llama processes'
+        'profile:Manage named run/serve profiles'
         'help:Show help'
       )
       _describe 'command' cmds ;;
@@ -1582,12 +2416,52 @@ _yallama() {
           _arguments \
             '--path[Installation root]:dir:_files -/' \
             '--check-update[Check for newer release]' ;;
+        search)
+          _arguments \
+            '--sort[Sort order]:by:(trending downloads likes newest)' \
+            '--limit[Maximum number of results]:n' \
+            '--quants[Show available quant variants]' \
+            '--quiet[Only print model identifiers]' \
+            '--json[JSON output]' ;;
+        browse)
+          _arguments '--print[Print URL instead of opening browser]' && _yallama_cached_models ;;
         list|ls)
           _arguments '--quiet[Only print names]' '--json[JSON output]' ;;
         remove|rm)
           _arguments '--force[Skip confirmation prompt]' && _yallama_cached_models ;;
-        pull|run|serve)
+        pull)
           _yallama_cached_models ;;
+        run|serve)
+          { _yallama_cached_models; _yallama_profiles } ;;
+        profile)
+          local profile_state
+          _arguments '1:subcommand:->sub' '*::profile-opts:->popts'
+          case $profile_state in
+            sub)
+              local subcmds=(
+                'set:Create or replace a profile'
+                'list:List all profiles'
+                'show:Print a profile'
+                'remove:Delete a profile'
+                'duplicate:Copy a profile to a new name'
+                'new:Create a profile from a template'
+                'templates:List available templates'
+                'template-show:Print a template'
+                'template-set:Create or replace a user-defined template'
+                'template-remove:Delete a user-defined template'
+              )
+              _describe 'profile subcommand' subcmds ;;
+            popts)
+              case $words[1] in
+                show|remove|duplicate) _yallama_profiles ;;
+                template-show|template-remove) _yallama_templates ;;
+                new)
+                  case $CURRENT in
+                    3) _yallama_templates ;;
+                    4) _yallama_cached_models ;;
+                  esac ;;
+              esac ;;
+          esac ;;
         versions)
           _arguments '--path[Installation root]:dir:_files -/' ;;
         prune)
@@ -1612,7 +2486,7 @@ _${sn//-/_}_completions() {
   local _saved_wb="\$COMP_WORDBREAKS"
   COMP_WORDBREAKS="\${COMP_WORDBREAKS//:}"
   _init_completion 2>/dev/null || { cur="\${COMP_WORDS[COMP_CWORD]}"; prev="\${COMP_WORDS[COMP_CWORD-1]}"; }
-  local commands="install update versions prune uninstall status pull list ls remove rm run serve ps help"
+  local commands="install update versions prune uninstall status search browse pull list ls remove rm run serve ps profile help"
   if [[ \$COMP_CWORD -eq 1 ]]; then
     COMPREPLY=(\$(compgen -W "\$commands" -- "\$cur"))
     COMP_WORDBREAKS="\$_saved_wb"
@@ -1623,24 +2497,57 @@ _${sn//-/_}_completions() {
   while IFS= read -r _yl; do
     [[ -n "\$_yl" ]] && models+=("\$_yl")
   done < <(yallama ls --quiet 2>/dev/null)
+  local profiles=()
+  while IFS= read -r _yp; do
+    [[ -n "\$_yp" ]] && profiles+=("\$_yp")
+  done < <(yallama profile list 2>/dev/null | awk 'NF==2{print \$1}')
   case "\$prev" in
     --path)  COMPREPLY=(\$(compgen -d -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
     --shell) COMPREPLY=(\$(compgen -W "fish zsh bash" -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
     --arch)  COMPREPLY=(\$(compgen -W "macos-arm64 macos-x86_64 ubuntu-x64 ubuntu-arm64" -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
+    --sort)  COMPREPLY=(\$(compgen -W "trending downloads likes newest" -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
   esac
   case "\$cmd" in
     install)  COMPREPLY=(\$(compgen -W "--tag --path --arch --shell-profile --no-shell-profile --print-latest-tag" -- "\$cur")) ;;
     update)   COMPREPLY=(\$(compgen -W "--path --arch --shell-profile --no-shell-profile" -- "\$cur")) ;;
     uninstall) COMPREPLY=(\$(compgen -W "--path --delete-hf-cache --self --force" -- "\$cur")) ;;
     status)   COMPREPLY=(\$(compgen -W "--path --check-update" -- "\$cur")) ;;
+    search)   COMPREPLY=(\$(compgen -W "--sort --limit --quants --quiet --json" -- "\$cur")) ;;
+    browse)
+      if [[ "\$cur" == --* ]]; then
+        COMPREPLY=(\$(compgen -W "--print" -- "\$cur"))
+      else
+        COMPREPLY=(\$(compgen -W "\${models[*]}" -- "\$cur"))
+      fi ;;
     list|ls)  COMPREPLY=(\$(compgen -W "--quiet --json" -- "\$cur")) ;;
-    pull|run|serve)
-      COMPREPLY=(\$(compgen -W "\${models[*]}" -- "\$cur")) ;;
+    pull)     COMPREPLY=(\$(compgen -W "\${models[*]}" -- "\$cur")) ;;
+    run|serve)
+      COMPREPLY=(\$(compgen -W "\${models[*]} \${profiles[*]}" -- "\$cur")) ;;
     remove|rm)
       if [[ "\$cur" == --* ]]; then
         COMPREPLY=(\$(compgen -W "--force" -- "\$cur"))
       else
         COMPREPLY=(\$(compgen -W "\${models[*]}" -- "\$cur"))
+      fi ;;
+    profile)
+      local profile_subcmds="set list show remove duplicate new templates template-show template-set template-remove"
+      if [[ \$COMP_CWORD -eq 2 ]]; then
+        COMPREPLY=(\$(compgen -W "\$profile_subcmds" -- "\$cur"))
+      else
+        local sub="\${COMP_WORDS[2]}"
+        local templates=()
+        while IFS= read -r _yt; do
+          [[ -n "\$_yt" ]] && templates+=("\$_yt")
+        done < <(yallama profile templates 2>/dev/null | awk 'NR>2 {print \$1}')
+        case "\$sub" in
+          show|remove|duplicate) COMPREPLY=(\$(compgen -W "\${profiles[*]}" -- "\$cur")) ;;
+          template-show|template-remove) COMPREPLY=(\$(compgen -W "\${templates[*]}" -- "\$cur")) ;;
+          new)
+            case \$COMP_CWORD in
+              4) COMPREPLY=(\$(compgen -W "\${templates[*]}" -- "\$cur")) ;;
+              5) COMPREPLY=(\$(compgen -W "\${models[*]}" -- "\$cur")) ;;
+            esac ;;
+        esac
       fi ;;
     versions) COMPREPLY=(\$(compgen -W "--path" -- "\$cur")) ;;
     prune)    COMPREPLY=(\$(compgen -W "--path --force" -- "\$cur")) ;;
@@ -1663,12 +2570,15 @@ case "$COMMAND" in
   update)      cmd_update "$@" ;;
   uninstall)   cmd_uninstall "$@" ;;
   status)      cmd_status "$@" ;;
+  search)      cmd_search "$@" ;;
+  browse)      cmd_browse "$@" ;;
   pull)        cmd_pull "$@" ;;
   list|ls)     cmd_list "$@" ;;
   remove|rm)   cmd_remove "$@" ;;
   run)         cmd_run "$@" ;;
   serve)       cmd_serve "$@" ;;
   ps)          cmd_ps "$@" ;;
+  profile)     cmd_profile "$@" ;;
   versions)    cmd_versions "$@" ;;
   prune)       cmd_prune "$@" ;;
   *)
