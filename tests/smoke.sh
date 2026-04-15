@@ -532,12 +532,19 @@ test_status_and_versions() {
     return
   fi
 
-  if ! assert_contains "$(cat "$stdout_file")" 'b1001  (current)'; then
+  local versions_out
+  versions_out="$(cat "$stdout_file")"
+  if ! assert_contains "$versions_out" 'VERSION' || ! assert_contains "$versions_out" 'STATUS'; then
+    fail 'versions output marks current' "expected tabular headings in versions output, got: $versions_out"
+    return
+  fi
+
+  if ! assert_contains "$versions_out" 'b1001' || ! assert_contains "$versions_out" 'current'; then
     fail 'versions output marks current' 'expected versions output to mark the active version'
     return
   fi
 
-  if ! assert_contains "$(cat "$stdout_file")" 'b1000'; then
+  if ! assert_contains "$versions_out" 'b1000'; then
     fail 'versions output lists all installed tags' 'expected versions output to include inactive versions'
     return
   fi
@@ -718,6 +725,11 @@ test_list_shows_quant_variants() {
 
   local out
   out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'MODEL' || ! assert_contains "$out" 'SIZE'; then
+    fail 'list shows quant variants' "expected tabular headings in list output, got: $out"
+    return
+  fi
 
   if ! assert_contains "$out" 'demo/test-GGUF:Q4_K_M'; then
     fail 'list shows quant variants' "expected output to contain 'demo/test-GGUF:Q4_K_M', got: $out"
@@ -1212,6 +1224,11 @@ test_search_quants_tabular() {
   local out
   out="$(cat "$stdout_file")"
 
+  if ! assert_contains "$out" 'QUANTS'; then
+    fail 'search --quants tabular output' "expected QUANTS column header, got: $out"
+    return
+  fi
+
   if ! assert_contains "$out" 'Q4_K_M'; then
     fail 'search --quants tabular output' "expected quant 'Q4_K_M' in output, got: $out"
     return
@@ -1540,6 +1557,11 @@ test_profile_list() {
 
   local out
   out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'NAME' || ! assert_contains "$out" 'MODEL'; then
+    fail 'profile list shows all profiles' "expected tabular headings in profile list output, got: $out"
+    return
+  fi
 
   if ! assert_contains "$out" 'coder'; then
     fail 'profile list shows all profiles' "expected 'coder' in list, got: $out"

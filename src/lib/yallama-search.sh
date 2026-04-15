@@ -134,9 +134,9 @@ cmd_search() {
         [.[] | select(has_gguf)][0:'"${limit}"'][] | .modelId'
     fi
   else
-    printf '%-60s  %10s  %s\n' 'MODEL' 'DOWNLOADS' 'LIKES'
-    printf '%-60s  %10s  %s\n' '-----' '---------' '-----'
     if [[ "$quants" == "true" ]]; then
+      printf '%-60s  %10s  %10s  %s\n' 'MODEL' 'DOWNLOADS' 'LIKES' 'QUANTS'
+      printf '%-60s  %10s  %10s  %s\n' '-----' '---------' '-----' '------'
       # @tsv: jq formatter that joins array elements with tab characters.
       # Paired with IFS=$'\t' in the read loop below, this provides reliable
       # field splitting even when values contain spaces.
@@ -144,12 +144,11 @@ cmd_search() {
         | jq -r "${_jq_quants_def}"'
             [.[] | select(has_gguf)][0:'"${limit}"'][] | [.modelId, (.downloads // 0 | tostring), (.likes // 0 | tostring), (default_quant as $dq | quants | map(if . == $dq then "*" + . else . end) | join(" "))] | @tsv' \
         | while IFS=$'\t' read -r name downloads likes qtags; do
-            printf '%-60s  %10s  %s\n' "$name" "$downloads" "$likes"
-            if [[ -n "$qtags" ]]; then
-              printf '  %s\n' "$qtags"
-            fi
+            printf '%-60s  %10s  %10s  %s\n' "$name" "$downloads" "$likes" "${qtags:--}"
           done
     else
+      printf '%-60s  %10s  %s\n' 'MODEL' 'DOWNLOADS' 'LIKES'
+      printf '%-60s  %10s  %s\n' '-----' '---------' '-----'
       printf '%s' "$results" \
         | jq -r "${_jq_quants_def}"'
               [.[] | select(has_gguf)][0:'"${limit}"'][] | [.modelId, (.downloads // 0 | tostring), (.likes // 0 | tostring)] | @tsv' \

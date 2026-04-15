@@ -653,6 +653,10 @@ cmd_versions() {
   for dir in "$INSTALL_ROOT"/llama-*/; do
     # Glob may match literally "llama-*/" if no directories exist; skip non-dirs.
     [[ -d "$dir" ]] || continue
+    if [[ "$found" -eq 0 ]]; then
+      printf '%-20s  %s\n' 'VERSION' 'STATUS'
+      printf '%-20s  %s\n' '-------' '------'
+    fi
     found=1
     local tag
     tag="$(basename "$dir")"
@@ -660,9 +664,9 @@ cmd_versions() {
     tag="${tag#llama-}"
     local dir_abs="${dir%/}"
     if [[ "$dir_abs" == "$current_dir" ]]; then
-      printf '  %s  (current)\n' "$tag"
+      printf '%-20s  %s\n' "$tag" 'current'
     else
-      printf '  %s\n' "$tag"
+      printf '%-20s  %s\n' "$tag" '-'
     fi
   done
 
