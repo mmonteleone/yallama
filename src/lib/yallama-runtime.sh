@@ -824,7 +824,7 @@ Usage: $SCRIPT_NAME run <MODEL_NAME|PROFILE> [-- <llama-cli args...>]
 
 Arguments:
   MODEL_NAME    HuggingFace model identifier, e.g. unsloth/gemma-4-26B-A4B-it-GGUF
-  PROFILE       A saved profile name (see: $SCRIPT_NAME profile list)
+  PROFILE       A saved profile name (see: $SCRIPT_NAME list --profiles)
 
 Downloads the model if needed and runs it interactively via llama-cli.
 When a profile is given, its model and flags are used automatically.
@@ -889,7 +889,7 @@ Usage: $SCRIPT_NAME serve <MODEL_NAME|PROFILE> [-- <llama-server args...>]
 
 Arguments:
   MODEL_NAME    HuggingFace model identifier, e.g. unsloth/gemma-4-26B-A4B-it-GGUF
-  PROFILE       A saved profile name (see: $SCRIPT_NAME profile list)
+  PROFILE       A saved profile name (see: $SCRIPT_NAME list --profiles)
 
 Downloads the model if needed and serves it via llama-server with Jinja templates.
 When a profile is given, its model and flags are used automatically.

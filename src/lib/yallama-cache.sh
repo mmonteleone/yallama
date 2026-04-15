@@ -328,97 +328,243 @@ quant_is_in_use() {
 
 cmd_list_usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME list [--quiet] [--json]
-       $SCRIPT_NAME ls   [--quiet] [--json]
+Usage: $SCRIPT_NAME list [--quiet] [--json] [--models] [--profiles] [--templates]
+       $SCRIPT_NAME ls   [--quiet] [--json] [--models] [--profiles] [--templates]
 
-Lists cached HuggingFace models. For GGUF models, each downloaded quant
-variant is shown as a separate row (e.g. user/model:Q4_K_M).
+Lists cached HuggingFace models, saved profiles, and templates.
+
+When multiple entry types are included, output is grouped into separate
+sections. For GGUF models, each downloaded quant variant is shown as a
+separate row (e.g. user/model:Q4_K_M).
 
 Options:
+  --models  Include only model entries.
+  --profiles Include only profile entries.
+  --templates Include only template entries.
   --quiet   Print only model[:quant] identifiers, one per line. Useful for piping.
-  --json    Output as a JSON array with 'name', 'quant', and 'size' fields.
+  --json    Output as a JSON array with a 'kind' field ('MODEL', 'PROFILE', 'TEMPLATE').
 EOF
 }
 
 cmd_list() {
   local QUIET="false"
   local JSON="false"
+  local SHOW_MODELS="true"
+  local SHOW_PROFILES="true"
+  local SHOW_TEMPLATES="true"
+  local SCOPE_SET="false"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --quiet)   QUIET="true"; shift ;;
       --json)    JSON="true"; shift ;;
+      --models)
+        if [[ "$SCOPE_SET" == "false" ]]; then
+          SHOW_MODELS="false"
+          SHOW_PROFILES="false"
+          SHOW_TEMPLATES="false"
+          SCOPE_SET="true"
+        fi
+        SHOW_MODELS="true"
+        shift
+        ;;
+      --profiles)
+        if [[ "$SCOPE_SET" == "false" ]]; then
+          SHOW_MODELS="false"
+          SHOW_PROFILES="false"
+          SHOW_TEMPLATES="false"
+          SCOPE_SET="true"
+        fi
+        SHOW_PROFILES="true"
+        shift
+        ;;
+      --templates)
+        if [[ "$SCOPE_SET" == "false" ]]; then
+          SHOW_MODELS="false"
+          SHOW_PROFILES="false"
+          SHOW_TEMPLATES="false"
+          SCOPE_SET="true"
+        fi
+        SHOW_TEMPLATES="true"
+        shift
+        ;;
       -h|--help) cmd_list_usage; return 0 ;;
       *)         echo "Unknown argument: $1" >&2; cmd_list_usage >&2; return 1 ;;
     esac
   done
 
-  if [[ ! -d "$HF_HUB_DIR" ]]; then
-    if [[ "$JSON" == "true" ]]; then
-      echo "[]"
-    else
-      echo "No models found (${HF_HUB_DIR} does not exist)."
-    fi
-    return 0
+  local model_entries=()
+  local profile_entries=()
+  local template_entries=()
+  local entry
+
+  if [[ "$SHOW_MODELS" == "true" && -d "$HF_HUB_DIR" ]]; then
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      model_entries+=("$entry")
+    done < <(collect_cached_model_entries)
   fi
 
-  local found=0
-  local entries=()
-  local entry
-  while IFS= read -r entry; do
-    [[ -z "$entry" ]] && continue
-    entries+=("$entry")
-    found=1
-  done < <(collect_cached_model_entries)
+  if [[ "$SHOW_PROFILES" == "true" ]]; then
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      profile_entries+=("$entry")
+    done < <(collect_profile_entries)
+  fi
 
-  if [[ "$found" -eq 0 ]]; then
+  if [[ "$SHOW_TEMPLATES" == "true" ]]; then
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      template_entries+=("$entry")
+    done < <(collect_template_entries)
+  fi
+
+  local model_count profile_count template_count
+  model_count=${#model_entries[@]}
+  profile_count=${#profile_entries[@]}
+  template_count=${#template_entries[@]}
+
+  if [[ "$model_count" -eq 0 && "$profile_count" -eq 0 && "$template_count" -eq 0 ]]; then
     if [[ "$JSON" == "true" ]]; then
       echo "[]"
     else
-      echo "No models found."
+      if [[ "$SHOW_MODELS" == "true" && "$SHOW_PROFILES" == "true" && "$SHOW_TEMPLATES" == "true" ]]; then
+        echo "No models, profiles, or templates found."
+      elif [[ "$SHOW_MODELS" == "true" ]]; then
+        echo "No models found."
+      elif [[ "$SHOW_PROFILES" == "true" ]]; then
+        echo "No profiles found."
+      else
+        echo "No templates found."
+      fi
     fi
     return 0
   fi
 
   if [[ "$JSON" == "true" ]]; then
-    # jq -R: read each input line as a raw JSON string (not parsed JSON).
-    # split("|") turns the pipe-delimited line into an array of three fields.
-    # jq -s: slurp all individual JSON objects into a single JSON array.
-    printf '%s\n' "${entries[@]}" \
-      | jq -R 'split("|") | {name: .[0], quant: (if .[1] == "" then null else .[1] end), size: .[2]}' \
+    local json_lines=()
+    local e
+    if [[ "$model_count" -gt 0 ]]; then
+      for e in "${model_entries[@]}"; do
+        local name quant size
+        name="${e%%|*}"
+        local rest="${e#*|}"
+        quant="${rest%%|*}"
+        size="${rest#*|}"
+        json_lines+=("MODEL|${name}|${quant}|${size}")
+      done
+    fi
+    if [[ "$profile_count" -gt 0 ]]; then
+      for e in "${profile_entries[@]}"; do
+        local pname pmodel
+        pname="${e%%|*}"
+        pmodel="${e#*|}"
+        json_lines+=("PROFILE|${pname}|${pmodel}")
+      done
+    fi
+    if [[ "$template_count" -gt 0 ]]; then
+      for e in "${template_entries[@]}"; do
+        local tname ttype tmodel
+        tname="${e%%|*}"
+        local trest="${e#*|}"
+        ttype="${trest%%|*}"
+        tmodel="${trest#*|}"
+        json_lines+=("TEMPLATE|${tname}|${ttype}|${tmodel}")
+      done
+    fi
+
+    printf '%s\n' "${json_lines[@]}" \
+      | jq -R '
+          split("|")
+          | if .[0] == "MODEL" then
+              {kind: .[0], name: .[1], quant: (if .[2] == "" then null else .[2] end), size: .[3]}
+            elif .[0] == "PROFILE" then
+              {kind: .[0], name: .[1], model: .[2]}
+            else
+              {kind: .[0], name: .[1], type: .[2], model: .[3]}
+            end
+        ' \
       | jq -s '.'
   elif [[ "$QUIET" == "true" ]]; then
-    local e
-    for e in "${entries[@]}"; do
-      local name quant
-      # Extract pipe-delimited fields using the same %%|* / #*| operators
-      # as _parse_model_spec, but with '|' as the delimiter instead of ':'.
-      name="${e%%|*}"
-      local rest="${e#*|}"
-      quant="${rest%%|*}"
-      if [[ -n "$quant" ]]; then
-        echo "${name}:${quant}"
-      else
-        echo "$name"
-      fi
-    done
+    if [[ "$model_count" -gt 0 ]]; then
+      local e
+      for e in "${model_entries[@]}"; do
+        local name quant
+        name="${e%%|*}"
+        local rest="${e#*|}"
+        quant="${rest%%|*}"
+        if [[ -n "$quant" ]]; then
+          echo "${name}:${quant}"
+        else
+          echo "$name"
+        fi
+      done
+    fi
+
+    if [[ "$profile_count" -gt 0 ]]; then
+      local e
+      for e in "${profile_entries[@]}"; do
+        local pname
+        pname="${e%%|*}"
+        echo "$pname"
+      done
+    fi
+
+    if [[ "$template_count" -gt 0 ]]; then
+      local e
+      for e in "${template_entries[@]}"; do
+        local tname
+        tname="${e%%|*}"
+        echo "$tname"
+      done
+    fi
   else
-    printf '%-55s  %s\n' "MODEL" "SIZE"
-    printf '%-55s  %s\n' "-----" "----"
-    local e
-    for e in "${entries[@]}"; do
-      local name quant size display_name
-      name="${e%%|*}"
-      local rest="${e#*|}"
-      quant="${rest%%|*}"
-      size="${rest#*|}"
-      if [[ -n "$quant" ]]; then
-        display_name="${name}:${quant}"
-      else
-        display_name="$name"
-      fi
-      printf '%-55s  %s\n' "$display_name" "$size"
-    done
+    if [[ "$model_count" -gt 0 ]]; then
+      printf '%-55s  %s\n' "MODEL" "SIZE"
+      printf '%-55s  %s\n' "-----" "----"
+      local e
+      for e in "${model_entries[@]}"; do
+        local name quant size display_name
+        name="${e%%|*}"
+        local rest="${e#*|}"
+        quant="${rest%%|*}"
+        size="${rest#*|}"
+        if [[ -n "$quant" ]]; then
+          display_name="${name}:${quant}"
+        else
+          display_name="$name"
+        fi
+        printf '%-55s  %s\n' "$display_name" "$size"
+      done
+    fi
+
+    if [[ "$profile_count" -gt 0 ]]; then
+      [[ "$model_count" -gt 0 ]] && echo
+      printf '%-20s  %s\n' "PROFILE" "MODEL"
+      printf '%-20s  %s\n' "-------" "-----"
+      local e
+      for e in "${profile_entries[@]}"; do
+        local pname pmodel
+        pname="${e%%|*}"
+        pmodel="${e#*|}"
+        printf '%-20s  %s\n' "$pname" "$pmodel"
+      done
+    fi
+
+    if [[ "$template_count" -gt 0 ]]; then
+      [[ "$model_count" -gt 0 || "$profile_count" -gt 0 ]] && echo
+      printf '%-20s  %-10s  %s\n' "TEMPLATE" "TYPE" "DEFAULT MODEL"
+      printf '%-20s  %-10s  %s\n' "--------" "----" "-------------"
+      local e
+      for e in "${template_entries[@]}"; do
+        local tname ttype tmodel
+        tname="${e%%|*}"
+        local trest="${e#*|}"
+        ttype="${trest%%|*}"
+        tmodel="${trest#*|}"
+        printf '%-20s  %-10s  %s\n' "$tname" "$ttype" "$tmodel"
+      done
+    fi
   fi
 }
 
@@ -428,6 +574,8 @@ cmd_remove_usage() {
   cat <<EOF
 Usage: $SCRIPT_NAME remove <MODEL_NAME>[:<QUANT>] [--force]
        $SCRIPT_NAME rm <MODEL_NAME>[:<QUANT>] [--force]
+       $SCRIPT_NAME remove <PROFILE_NAME>
+       $SCRIPT_NAME rm <PROFILE_NAME>
 
 Arguments:
   MODEL_NAME    HuggingFace model identifier, e.g. unsloth/gemma-4-26B-A4B-it-GGUF
@@ -435,6 +583,8 @@ Arguments:
                 (e.g. Q4_K_M, UD-Q6_K). Without it, the entire model is removed.
 
 Use '$SCRIPT_NAME list' to see available quant tags.
+
+Passing a profile name removes that saved profile.
 
 Deletes the locally cached model or quant variant. Refuses if the model is
 currently in use by llama-cli or llama-server.
@@ -453,7 +603,7 @@ cmd_remove() {
     [[ $# -eq 0 ]] && return 1 || return 0
   fi
 
-  local model_spec="$1"
+  local target_spec="$1"
   local force="false"
   shift
 
@@ -465,8 +615,19 @@ cmd_remove() {
     esac
   done
 
+  # If TARGET has no model slash/quant suffix and matches an existing profile,
+  # treat this as profile deletion for parity with model removal.
+  if [[ "$target_spec" != */* && "$target_spec" != *:* ]]; then
+    local profile_path
+    profile_path="$(_profile_path "$target_spec")"
+    if [[ -f "$profile_path" ]]; then
+      remove_profile_by_name "$target_spec"
+      return 0
+    fi
+  fi
+
   local model_name quant
-  _parse_model_spec "$model_spec"
+  _parse_model_spec "$target_spec"
   model_name="$REPLY_MODEL"
   quant="$REPLY_QUANT"
 

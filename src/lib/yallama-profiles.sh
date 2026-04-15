@@ -94,6 +94,51 @@ _validate_profile_name() {
   fi
 }
 
+# Emit one line per profile in pipe-delimited format:
+#   {profile_name}|{model_spec}
+# Profiles without a model= line are skipped.
+collect_profile_entries() {
+  local profiles_dir
+  profiles_dir="$(_profiles_dir)"
+  [[ -d "$profiles_dir" ]] || return 0
+
+  local f
+  for f in "$profiles_dir"/*; do
+    [[ -f "$f" ]] || continue
+    local name model_line
+    name="$(basename "$f")"
+    model_line="$(grep '^model=' "$f" 2>/dev/null | head -1)"
+    model_line="${model_line#model=}"
+    [[ -n "$model_line" ]] || continue
+    printf '%s|%s\n' "$name" "$model_line"
+  done
+}
+
+# Emit one line per template in pipe-delimited format:
+#   {template_name}|{type}|{default_model}
+# type is "built-in" or "user". default_model is "(none)" when absent.
+collect_template_entries() {
+  local -a builtin_names=( chat code )
+  local bname
+  for bname in "${builtin_names[@]}"; do
+    printf '%s|%s|%s\n' "$bname" 'built-in' '(none)'
+  done
+
+  local templates_dir
+  templates_dir="$(_templates_dir)"
+  [[ -d "$templates_dir" ]] || return 0
+
+  local f
+  for f in "$templates_dir"/*; do
+    [[ -f "$f" ]] || continue
+    local tname model_line
+    tname="$(basename "$f")"
+    model_line="$(grep '^model=' "$f" 2>/dev/null | head -1)"
+    model_line="${model_line#model=}"
+    printf '%s|%s|%s\n' "$tname" 'user' "${model_line:-(none)}"
+  done
+}
+
 # Load a profile file.
 # Usage: _load_profile <name> [run|serve]
 # Sets REPLY_PROFILE_MODEL and REPLY_PROFILE_ARGS (array).
@@ -142,56 +187,26 @@ _load_profile() {
 cmd_profile_usage() {
   cat <<EOF
 Usage: $SCRIPT_NAME profile set <NAME> <MODEL_SPEC> [-- <flags...>]
-       $SCRIPT_NAME profile list
+       $SCRIPT_NAME profile set <NAME> <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]
        $SCRIPT_NAME profile show <NAME>
-       $SCRIPT_NAME profile remove <NAME>
        $SCRIPT_NAME profile duplicate <SOURCE> <DEST>
-       $SCRIPT_NAME profile new <NAME> <TEMPLATE> [<MODEL_SPEC>]
-       $SCRIPT_NAME profile templates
-       $SCRIPT_NAME profile template-show <TEMPLATE>
-       $SCRIPT_NAME profile template-set <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]
-       $SCRIPT_NAME profile template-remove <TEMPLATE>
 
 Subcommands:
   set <NAME> <MODEL_SPEC> [-- <flags...>]
-      Create or replace a named profile. MODEL_SPEC is user/model[:quant].
-      Pass llama-cli / llama-server flags after '--'. All flags are written
-      to the common section (applied to both run and serve). To add
-      command-specific flags, edit the profile file directly and add
-      [run] or [serve] section headers.
+      Create or replace a named profile from a model spec.
 
-  list
-      List all saved profiles.
+  set <NAME> <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]
+      Create or replace a named profile from a template. MODEL_SPEC is
+      optional if the template includes a 'model=' line.
 
   show <NAME>
       Print the profile's model and flags.
 
-  remove <NAME>
-      Delete a profile.
-
   duplicate <SOURCE> <DEST>
       Copy an existing profile to a new name.
 
-  new <NAME> <TEMPLATE> [<MODEL_SPEC>]
-      Create a new profile from a template. MODEL_SPEC overrides any default
-      model embedded in the template. Errors if the profile already exists.
-
-  templates
-      List all available templates (built-in and user-defined).
-
-  template-show <TEMPLATE>
-      Print the content of a template.
-
-  template-set <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]
-      Create or replace a user-defined template. MODEL_SPEC is optional.
-
-  template-remove <TEMPLATE>
-      Delete a user-defined template. Built-in templates cannot be removed.
-
 Profiles are stored in: \${YALLAMA_PROFILES_DIR:-~/.config/yallama/profiles}
-Templates are stored in: \${YALLAMA_TEMPLATES_DIR:-~/.config/yallama/templates}
-
-Built-in templates: chat, code
+Built-in templates available for 'profile set': chat, code
 
 Optional [run] and [serve] section headers in a profile file scope flags to
 only that command. Flags before any section header apply to both.
@@ -210,8 +225,8 @@ Example profile file:
 Use a profile name instead of a model spec with 'run' or 'serve':
   $SCRIPT_NAME serve coder
 
-Create a profile from a built-in template:
-  $SCRIPT_NAME  profile new mycoder code unsloth/Qwen3.5-27B-GGUF:UD-Q5_K_XL
+Create/update a profile from a built-in template:
+  $SCRIPT_NAME profile set mycoder code unsloth/Qwen3.5-27B-GGUF:UD-Q5_K_XL
 EOF
 }
 
@@ -226,15 +241,8 @@ cmd_profile() {
 
   case "$subcmd" in
     set)             _cmd_profile_set "$@" ;;
-    list)            _cmd_profile_list "$@" ;;
     show)            _cmd_profile_show "$@" ;;
-    remove)          _cmd_profile_remove "$@" ;;
     duplicate)       _cmd_profile_duplicate "$@" ;;
-    new)             _cmd_profile_new "$@" ;;
-    templates)       _cmd_profile_templates "$@" ;;
-    template-show)   _cmd_profile_template_show "$@" ;;
-    template-set)    _cmd_profile_template_set "$@" ;;
-    template-remove) _cmd_profile_template_remove "$@" ;;
     -h|--help) cmd_profile_usage; return 0 ;;
     *)
       echo "Unknown profile subcommand: $subcmd" >&2
@@ -244,19 +252,133 @@ cmd_profile() {
   esac
 }
 
+cmd_template_usage() {
+  cat <<EOF
+Usage: $SCRIPT_NAME template show <TEMPLATE>
+       $SCRIPT_NAME template set <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]
+       $SCRIPT_NAME template remove <TEMPLATE>
+
+Subcommands:
+  show <TEMPLATE>
+      Print the content of a template.
+
+  set <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]
+      Create or replace a user-defined template. MODEL_SPEC is optional.
+
+  remove <TEMPLATE>
+      Delete a user-defined template. Built-in templates cannot be removed.
+
+Templates are stored in: \${YALLAMA_TEMPLATES_DIR:-~/.config/yallama/templates}
+Built-in templates: chat, code
+EOF
+}
+
+cmd_template() {
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    cmd_template_usage
+    [[ $# -eq 0 ]] && return 1 || return 0
+  fi
+
+  local subcmd="$1"
+  shift
+
+  case "$subcmd" in
+    show)            _cmd_template_show "$@" ;;
+    set)             _cmd_template_set "$@" ;;
+    remove|rm)       _cmd_template_remove "$@" ;;
+    -h|--help) cmd_template_usage; return 0 ;;
+    *)
+      echo "Unknown template subcommand: $subcmd" >&2
+      cmd_template_usage >&2
+      return 1
+      ;;
+  esac
+}
+
+_emit_flag_lines_from_args() {
+  local args=("$@")
+  local i=0
+  local nargs=${#args[@]}
+  while [[ $i -lt $nargs ]]; do
+    local arg="${args[$i]}"
+    local next=$(( i + 1 ))
+    if [[ "$arg" == -* ]] && [[ $next -lt $nargs ]] && [[ "${args[$next]}" != -* ]]; then
+      printf '%s %s\n' "$arg" "${args[$next]}"
+      i=$(( i + 2 ))
+    else
+      printf '%s\n' "$arg"
+      i=$(( i + 1 ))
+    fi
+  done
+}
+
+_extract_model_from_template_content() {
+  local template_content="$1"
+  local line
+  while IFS= read -r line; do
+    if [[ "$line" == model=* ]]; then
+      printf '%s\n' "${line#model=}"
+      return 0
+    fi
+  done <<< "$template_content"
+  return 1
+}
+
+_write_profile_file() {
+  local path="$1"
+  local model_spec="$2"
+  local template_content="$3"
+  shift 3
+  local extra_args=("$@")
+
+  {
+    printf 'model=%s\n' "$model_spec"
+    if [[ -n "$template_content" ]]; then
+      local tline
+      while IFS= read -r tline; do
+        [[ "$tline" == model=* ]] && continue
+        printf '%s\n' "$tline"
+      done <<< "$template_content"
+    fi
+    if [[ ${#extra_args[@]} -gt 0 ]]; then
+      _emit_flag_lines_from_args "${extra_args[@]}"
+    fi
+  } > "$path"
+}
+
 _cmd_profile_set() {
   if [[ $# -lt 2 || "$1" == "-h" || "$1" == "--help" ]]; then
     echo "Usage: $SCRIPT_NAME profile set <NAME> <MODEL_SPEC> [-- <flags...>]" >&2
+    echo "       $SCRIPT_NAME profile set <NAME> <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]" >&2
     [[ $# -lt 2 ]] && return 1 || return 0
   fi
 
   local name="$1"
-  local model_spec="$2"
+  local target="$2"
   shift 2
 
   _validate_profile_name "$name"
 
+  local template_content=""
+  local model_spec=""
   local extra_args=()
+
+  if [[ "$target" == */* ]]; then
+    model_spec="$target"
+  else
+    _validate_template_name "$target"
+    template_content="$(_get_template_content "$target")"
+
+    if [[ $# -gt 0 && "$1" != "--" ]]; then
+      model_spec="$1"
+      shift
+    else
+      model_spec="$(_extract_model_from_template_content "$template_content" || true)"
+    fi
+
+    [[ -n "$model_spec" ]] || die "no model specified: provide a MODEL_SPEC argument or add 'model=' to the template"
+  fi
+
   if [[ $# -gt 0 ]]; then
     [[ "$1" == "--" ]] || die "expected '--' before flags, got: $1"
     shift
@@ -270,61 +392,12 @@ _cmd_profile_set() {
   local path
   path="$(_profile_path "$name")"
 
-  # { ... } > "$path": brace group redirects all enclosed output to the file.
-  # This is more efficient than multiple individual redirects and ensures
-  # the file is written atomically (opened once, closed once).
-  {
-    printf 'model=%s\n' "$model_spec"
-    # Write flags one-per-line or as flag+value pairs on one line
-    # (e.g. "--ctx-size 8192") to keep the profile file human-readable.
-    # Walk the extra_args array: if arg[i] starts with '-' and arg[i+1]
-    # does not, treat them as a flag+value pair and emit them together.
-    local i=0
-    local _nargs=${#extra_args[@]}
-    while [[ $i -lt $_nargs ]]; do
-      local _arg="${extra_args[$i]}"
-      local _next=$(( i + 1 ))
-      if [[ "$_arg" == -* ]] && [[ $_next -lt $_nargs ]] && [[ "${extra_args[$_next]}" != -* ]]; then
-        printf '%s %s\n' "$_arg" "${extra_args[$_next]}"
-        i=$(( i + 2 ))
-      else
-        printf '%s\n' "$_arg"
-        i=$(( i + 1 ))
-      fi
-    done
-  } > "$path"
-
+  if [[ ${#extra_args[@]} -gt 0 ]]; then
+    _write_profile_file "$path" "$model_spec" "$template_content" "${extra_args[@]}"
+  else
+    _write_profile_file "$path" "$model_spec" "$template_content"
+  fi
   echo "Profile '${name}' saved."
-}
-
-_cmd_profile_list() {
-  local profiles_dir
-  profiles_dir="$(_profiles_dir)"
-
-  if [[ ! -d "$profiles_dir" ]]; then
-    echo "No profiles found."
-    return 0
-  fi
-
-  local found=0
-  local f
-  for f in "$profiles_dir"/*; do
-    [[ -f "$f" ]] || continue
-    local name model_line
-    name="$(basename "$f")"
-    model_line="$(grep '^model=' "$f" 2>/dev/null | head -1)"
-    model_line="${model_line#model=}"
-    if [[ "$found" -eq 0 ]]; then
-      printf '%-20s  %s\n' 'NAME' 'MODEL'
-      printf '%-20s  %s\n' '----' '-----'
-    fi
-    printf '%-20s  %s\n' "$name" "$model_line"
-    found=1
-  done
-
-  if [[ "$found" -eq 0 ]]; then
-    echo "No profiles found."
-  fi
 }
 
 _cmd_profile_show() {
@@ -343,12 +416,7 @@ _cmd_profile_show() {
   cat "$path"
 }
 
-_cmd_profile_remove() {
-  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "Usage: $SCRIPT_NAME profile remove <NAME>" >&2
-    [[ $# -eq 0 ]] && return 1 || return 0
-  fi
-
+remove_profile_by_name() {
   local name="$1"
   _validate_profile_name "$name"
 
@@ -383,88 +451,9 @@ _cmd_profile_duplicate() {
   echo "Profile '${src}' duplicated to '${dst}'."
 }
 
-_cmd_profile_new() {
-  if [[ $# -lt 2 || "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "Usage: $SCRIPT_NAME profile new <NAME> <TEMPLATE> [<MODEL_SPEC>]" >&2
-    [[ $# -lt 2 ]] && return 1 || return 0
-  fi
-
-  local name="$1"
-  local template_name="$2"
-  local model_arg="${3:-}"
-
-  _validate_profile_name "$name"
-  _validate_template_name "$template_name"
-
-  local template_content
-  template_content="$(_get_template_content "$template_name")"
-
-  local model=""
-  if [[ -n "$model_arg" ]]; then
-    model="$model_arg"
-  else
-    local tline
-    while IFS= read -r tline; do
-      if [[ "$tline" == model=* ]]; then
-        model="${tline#model=}"
-        break
-      fi
-    done <<< "$template_content"
-  fi
-  [[ -n "$model" ]] || die "no model specified: provide a MODEL_SPEC argument or add 'model=' to the template"
-
-  local profiles_dir
-  profiles_dir="$(_profiles_dir)"
-  local path
-  path="$(_profile_path "$name")"
-
-  [[ ! -f "$path" ]] || die "profile '${name}' already exists; remove it first or use 'profile set' to overwrite"
-
-  mkdir -p "$profiles_dir"
-
-  # Build the profile file: model= line first, then all template lines
-  # except any embedded model= line (which was overridden above).
-  {
-    printf 'model=%s\n' "$model"
-    while IFS= read -r tline; do
-      [[ "$tline" == model=* ]] && continue
-      printf '%s\n' "$tline"
-    done <<< "$template_content"
-  } > "$path"
-
-  echo "Profile '${name}' created from template '${template_name}'."
-}
-
-_cmd_profile_templates() {
-  # 'local -a': explicitly declare a local array variable.
-  local -a builtin_names=( chat code )
-  local templates_dir
-  templates_dir="$(_templates_dir)"
-
-  printf '%-20s  %-10s  %s\n' 'NAME' 'TYPE' 'DEFAULT MODEL'
-  printf '%-20s  %-10s  %s\n' '----' '----' '-------------'
-
-  local bname
-  for bname in "${builtin_names[@]}"; do
-    printf '%-20s  %-10s  %s\n' "$bname" 'built-in' '(none)'
-  done
-
-  if [[ -d "$templates_dir" ]]; then
-    local f
-    for f in "$templates_dir"/*; do
-      [[ -f "$f" ]] || continue
-      local tname model_line
-      tname="$(basename "$f")"
-      model_line="$(grep '^model=' "$f" 2>/dev/null | head -1)"
-      model_line="${model_line#model=}"
-      printf '%-20s  %-10s  %s\n' "$tname" 'user' "${model_line:-(none)}"
-    done
-  fi
-}
-
-_cmd_profile_template_show() {
+_cmd_template_show() {
   if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "Usage: $SCRIPT_NAME profile template-show <TEMPLATE>" >&2
+    echo "Usage: $SCRIPT_NAME template show <TEMPLATE>" >&2
     [[ $# -eq 0 ]] && return 1 || return 0
   fi
 
@@ -473,9 +462,9 @@ _cmd_profile_template_show() {
   _get_template_content "$name"
 }
 
-_cmd_profile_template_set() {
+_cmd_template_set() {
   if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "Usage: $SCRIPT_NAME profile template-set <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]" >&2
+    echo "Usage: $SCRIPT_NAME template set <TEMPLATE> [<MODEL_SPEC>] [-- <flags...>]" >&2
     [[ $# -eq 0 ]] && return 1 || return 0
   fi
 
@@ -510,27 +499,17 @@ _cmd_profile_template_set() {
     if [[ -n "$model_spec" ]]; then
       printf 'model=%s\n' "$model_spec"
     fi
-    local i=0
-    local _nargs=${#extra_args[@]}
-    while [[ $i -lt $_nargs ]]; do
-      local _arg="${extra_args[$i]}"
-      local _next=$(( i + 1 ))
-      if [[ "$_arg" == -* ]] && [[ $_next -lt $_nargs ]] && [[ "${extra_args[$_next]}" != -* ]]; then
-        printf '%s %s\n' "$_arg" "${extra_args[$_next]}"
-        i=$(( i + 2 ))
-      else
-        printf '%s\n' "$_arg"
-        i=$(( i + 1 ))
-      fi
-    done
+    if [[ ${#extra_args[@]} -gt 0 ]]; then
+      _emit_flag_lines_from_args "${extra_args[@]}"
+    fi
   } > "$path"
 
   echo "Template '${name}' saved."
 }
 
-_cmd_profile_template_remove() {
+_cmd_template_remove() {
   if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "Usage: $SCRIPT_NAME profile template-remove <TEMPLATE>" >&2
+    echo "Usage: $SCRIPT_NAME template remove <TEMPLATE>" >&2
     [[ $# -eq 0 ]] && return 1 || return 0
   fi
 
