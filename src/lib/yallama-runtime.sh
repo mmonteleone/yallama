@@ -653,6 +653,10 @@ cmd_versions() {
   for dir in "$INSTALL_ROOT"/llama-*/; do
     # Glob may match literally "llama-*/" if no directories exist; skip non-dirs.
     [[ -d "$dir" ]] || continue
+    if [[ "$found" -eq 0 ]]; then
+      printf '%-20s  %s\n' 'VERSION' 'STATUS'
+      printf '%-20s  %s\n' '-------' '------'
+    fi
     found=1
     local tag
     tag="$(basename "$dir")"
@@ -660,9 +664,9 @@ cmd_versions() {
     tag="${tag#llama-}"
     local dir_abs="${dir%/}"
     if [[ "$dir_abs" == "$current_dir" ]]; then
-      printf '  %s  (current)\n' "$tag"
+      printf '%-20s  %s\n' "$tag" 'current'
     else
-      printf '  %s\n' "$tag"
+      printf '%-20s  %s\n' "$tag" '-'
     fi
   done
 
@@ -945,16 +949,14 @@ cmd_serve() {
 cmd_ps() {
   local ps_output
   # Try GNU/Linux ps format first (-eo); fall back to BSD/macOS (-ax -o).
-  # The awk script filters to llama-cli and llama-server processes only,
-  # matching both by process name and by the full argument list to catch
-  # cases where the binary is invoked via a path prefix (e.g. /usr/bin/llama-cli).
+  # The awk script filters to llama-cli and llama-server process names only.
+  # Matching on full args can self-match the awk command line itself.
   ps_output="$({ ps -eo pid=,comm=,args= -ww 2>/dev/null || ps -ax -o pid=,comm=,args= -ww 2>/dev/null; } | awk '
     {
       pid = $1
       proc = $2
-      args = $0
 
-      if (proc !~ /(^|\/)llama-(cli|server)$/ && args !~ /(^|[[:space:]])llama-(cli|server)([[:space:]]|$)/) {
+      if (proc !~ /^llama-(cli|server)$/) {
         next
       }
 

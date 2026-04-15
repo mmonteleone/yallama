@@ -188,6 +188,27 @@ EOF
   chmod +x "$path"
 }
 
+write_mock_ps() {
+  local path="$1"
+  cat >"$path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$*" == *"pid=,comm=,args="* ]]; then
+  cat <<'OUT'
+26366 awk awk { if (proc !~ /llama-(cli|server)/) next }
+31111 llama-server /tmp/install/current/llama-server -hf demo/server-model --port 9000
+32222 llama-cli /tmp/install/current/llama-cli -hf demo/cli-model
+OUT
+  exit 0
+fi
+
+echo "mock ps: unsupported args: $*" >&2
+exit 1
+EOF
+  chmod +x "$path"
+}
+
 test_generated_standalone_script() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
@@ -511,12 +532,19 @@ test_status_and_versions() {
     return
   fi
 
-  if ! assert_contains "$(cat "$stdout_file")" 'b1001  (current)'; then
+  local versions_out
+  versions_out="$(cat "$stdout_file")"
+  if ! assert_contains "$versions_out" 'VERSION' || ! assert_contains "$versions_out" 'STATUS'; then
+    fail 'versions output marks current' "expected tabular headings in versions output, got: $versions_out"
+    return
+  fi
+
+  if ! assert_contains "$versions_out" 'b1001' || ! assert_contains "$versions_out" 'current'; then
     fail 'versions output marks current' 'expected versions output to mark the active version'
     return
   fi
 
-  if ! assert_contains "$(cat "$stdout_file")" 'b1000'; then
+  if ! assert_contains "$versions_out" 'b1000'; then
     fail 'versions output lists all installed tags' 'expected versions output to include inactive versions'
     return
   fi
@@ -697,6 +725,11 @@ test_list_shows_quant_variants() {
 
   local out
   out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'MODEL' || ! assert_contains "$out" 'SIZE'; then
+    fail 'list shows quant variants' "expected tabular headings in list output, got: $out"
+    return
+  fi
 
   if ! assert_contains "$out" 'demo/test-GGUF:Q4_K_M'; then
     fail 'list shows quant variants' "expected output to contain 'demo/test-GGUF:Q4_K_M', got: $out"
@@ -1191,6 +1224,11 @@ test_search_quants_tabular() {
   local out
   out="$(cat "$stdout_file")"
 
+  if ! assert_contains "$out" 'QUANTS'; then
+    fail 'search --quants tabular output' "expected QUANTS column header, got: $out"
+    return
+  fi
+
   if ! assert_contains "$out" 'Q4_K_M'; then
     fail 'search --quants tabular output' "expected quant 'Q4_K_M' in output, got: $out"
     return
@@ -1401,6 +1439,39 @@ test_browse_no_model_errors() {
   fi
 }
 
+test_ps_ignores_awk_false_positive() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_mock_ps "${TEST_DIR}/bin/ps"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" ps
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'ps excludes awk false positive' "ps failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'llama-server'; then
+    fail 'ps excludes awk false positive' "expected llama-server row, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'llama-cli'; then
+    fail 'ps excludes awk false positive' "expected llama-cli row, got: $out"
+    return
+  fi
+
+  if assert_contains "$out" 'awk'; then
+    fail 'ps excludes awk false positive' "did not expect awk row, got: $out"
+    return
+  fi
+
+  pass 'ps excludes awk false positive'
+}
+
 test_search_bad_argument_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
@@ -1486,6 +1557,11 @@ test_profile_list() {
 
   local out
   out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'NAME' || ! assert_contains "$out" 'MODEL'; then
+    fail 'profile list shows all profiles' "expected tabular headings in profile list output, got: $out"
+    return
+  fi
 
   if ! assert_contains "$out" 'coder'; then
     fail 'profile list shows all profiles' "expected 'coder' in list, got: $out"
@@ -2359,6 +2435,9 @@ main() {
 
   setup_test_env
   test_browse_no_model_errors
+
+  setup_test_env
+  test_ps_ignores_awk_false_positive
 
   setup_test_env
   test_search_bad_argument_errors

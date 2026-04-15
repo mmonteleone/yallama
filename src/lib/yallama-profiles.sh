@@ -314,6 +314,10 @@ _cmd_profile_list() {
     name="$(basename "$f")"
     model_line="$(grep '^model=' "$f" 2>/dev/null | head -1)"
     model_line="${model_line#model=}"
+    if [[ "$found" -eq 0 ]]; then
+      printf '%-20s  %s\n' 'NAME' 'MODEL'
+      printf '%-20s  %s\n' '----' '-----'
+    fi
     printf '%-20s  %s\n' "$name" "$model_line"
     found=1
   done

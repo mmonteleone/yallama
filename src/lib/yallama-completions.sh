@@ -81,7 +81,7 @@ function __yallama_cached_models
 end
 
 function __yallama_profiles
-  yallama profile list 2>/dev/null | awk 'NF==2{print \$1}'
+  yallama profile list 2>/dev/null | awk 'NR>2 && NF>=2 {print \$1}'
 end
 
 function __yallama_templates
@@ -108,7 +108,7 @@ _yallama_cached_models() {
 
 _yallama_profiles() {
   local names
-  names=(${(f)"$(yallama profile list 2>/dev/null | awk 'NF==2{print $1}')"})
+  names=(${(f)"$(yallama profile list 2>/dev/null | awk 'NR>2 && NF>=2 {print $1}')"})
   (( ${#names[@]} )) && _values 'profile' "${names[@]}"
 }
 
@@ -260,7 +260,7 @@ _${sn//-/_}_completions() {
   local profiles=()
   while IFS= read -r _yp; do
     [[ -n "\$_yp" ]] && profiles+=("\$_yp")
-  done < <(yallama profile list 2>/dev/null | awk 'NF==2{print \$1}')
+  done < <(yallama profile list 2>/dev/null | awk 'NR>2 && NF>=2 {print \$1}')
   case "\$prev" in
     --path)  COMPREPLY=(\$(compgen -d -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
     --shell) COMPREPLY=(\$(compgen -W "fish zsh bash" -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
