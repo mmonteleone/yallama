@@ -89,12 +89,13 @@ Commands:
   search <QUERY>       Search HuggingFace for compatible GGUF models
   browse <MODEL_NAME>  Open a model's HuggingFace page in your browser
   pull <MODEL_NAME>    Download a HuggingFace model without running it
-  list (ls)            List downloaded HuggingFace models and quant variants
-  remove (rm)          Remove a downloaded model or specific quant variant
+  list (ls)            List downloaded models, profiles, and templates
+  remove (rm)          Remove a downloaded model/quant or a saved profile
   run <MODEL_NAME>     Download and run a HuggingFace model
   serve <MODEL_NAME>   Download and serve a HuggingFace model
   ps                   Show running llama-cli / llama-server processes
   profile              Manage named run/serve profiles
+  template             Manage templates
   version (--version)  Show yallama version
   help (h, ?)          Show this help
 
@@ -133,6 +134,7 @@ case "$COMMAND" in
   serve)       cmd_serve "$@" ;;
   ps)          cmd_ps "$@" ;;
   profile)     cmd_profile "$@" ;;
+  template)    cmd_template "$@" ;;
   versions)    cmd_versions "$@" ;;
   prune)       cmd_prune "$@" ;;
   *)

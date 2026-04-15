@@ -780,12 +780,263 @@ test_list_quiet_includes_quant() {
 
   local out
   out="$(cat "$stdout_file")"
-  if ! assert_eq "$out" 'demo/test-GGUF:Q4_K_M'; then
+  if ! assert_contains "$out" 'demo/test-GGUF:Q4_K_M'; then
     fail 'list --quiet shows model:quant' "expected 'demo/test-GGUF:Q4_K_M', got '$out'"
     return
   fi
 
   pass 'list --quiet shows model:quant'
+}
+
+test_list_includes_profiles_and_models_sections() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  create_gguf_fixture "models--demo--combo-GGUF" "combo-Q4_K_M.gguf" 1024
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder 'demo/combo-GGUF:Q4_K_M'
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list includes model/profile sections' "profile set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list includes model/profile sections' "list failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'MODEL' || ! assert_contains "$out" 'PROFILE'; then
+    fail 'list includes model/profile sections' "expected MODEL and PROFILE sections, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" 'demo/combo-GGUF:Q4_K_M'; then
+    fail 'list includes model/profile sections' "expected model row, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" 'coder'; then
+    fail 'list includes model/profile sections' "expected profile row, got: $out"
+    return
+  fi
+
+  pass 'list includes model/profile sections'
+}
+
+test_list_models_profiles_scopes() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  create_gguf_fixture "models--demo--scope-GGUF" "scope-Q8_0.gguf" 1024
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set scoped 'demo/scope-GGUF:Q8_0'
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list scope flags filter sections' "profile set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --models
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list scope flags filter sections' "list --models failed: $(cat "$stderr_file")"
+    return
+  fi
+  local out_models
+  out_models="$(cat "$stdout_file")"
+  if ! assert_contains "$out_models" 'MODEL' || assert_contains "$out_models" 'PROFILE'; then
+    fail 'list scope flags filter sections' "expected only model section for --models, got: $out_models"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --profiles
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list scope flags filter sections' "list --profiles failed: $(cat "$stderr_file")"
+    return
+  fi
+  local out_profiles
+  out_profiles="$(cat "$stdout_file")"
+  if ! assert_contains "$out_profiles" 'PROFILE' || ! assert_contains "$out_profiles" 'scoped'; then
+    fail 'list scope flags filter sections' "expected only profile section for --profiles, got: $out_profiles"
+    return
+  fi
+  if assert_contains "$out_profiles" 'SIZE'; then
+    fail 'list scope flags filter sections' "did not expect model table headers in --profiles output, got: $out_profiles"
+    return
+  fi
+
+  pass 'list scope flags filter sections'
+}
+
+test_list_json_and_quiet_include_profiles() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  create_gguf_fixture "models--demo--jsonq-GGUF" "jsonq-UD-Q6_K.gguf" 1024
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set jcoder 'demo/jsonq-GGUF:UD-Q6_K'
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list json/quiet include profiles and sections' "profile set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --json
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list json/quiet include profiles and sections' "list --json failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local model_count profile_count
+  model_count="$(jq '[ .[] | select(.kind == "MODEL") ] | length' "$stdout_file")"
+  profile_count="$(jq '[ .[] | select(.kind == "PROFILE") ] | length' "$stdout_file")"
+  if [[ "$model_count" -lt 1 || "$profile_count" -lt 1 ]]; then
+    fail 'list json/quiet include profiles and sections' "expected MODEL and PROFILE records in json, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --quiet
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list json/quiet include profiles and sections' "list --quiet failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local quiet_out
+  quiet_out="$(cat "$stdout_file")"
+  if ! assert_contains "$quiet_out" 'demo/jsonq-GGUF:UD-Q6_K'; then
+    fail 'list json/quiet include profiles and sections' "expected model spec in quiet output, got: $quiet_out"
+    return
+  fi
+  if ! assert_contains "$quiet_out" 'jcoder'; then
+    fail 'list json/quiet include profiles and sections' "expected profile name in quiet output, got: $quiet_out"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --json --profiles
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list json/quiet include profiles and sections' "list --json --profiles failed: $(cat "$stderr_file")"
+    return
+  fi
+  if ! assert_eq "$(jq '[ .[] | select(.kind != "PROFILE") ] | length' "$stdout_file")" '0'; then
+    fail 'list json/quiet include profiles and sections' "expected only PROFILE records when scoped, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  pass 'list json/quiet include profiles and sections'
+}
+
+test_list_includes_templates_section() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytmp user/tmpl-model:Q4_K -- --temp 0.5
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list includes templates section' "template-set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list includes templates section' "list failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'TEMPLATE' || ! assert_contains "$out" 'TYPE'; then
+    fail 'list includes templates section' "expected template section headers, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" 'mytmp'; then
+    fail 'list includes templates section' "expected user template row, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" 'chat' || ! assert_contains "$out" 'code'; then
+    fail 'list includes templates section' "expected built-in templates in list output, got: $out"
+    return
+  fi
+
+  pass 'list includes templates section'
+}
+
+test_list_templates_scope() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set onlytmp user/tmpl-model:Q4_K -- --temp 0.5
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list --templates scopes output' "template-set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --templates
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list --templates scopes output' "list --templates failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'TEMPLATE' || assert_contains "$out" 'PROFILE'; then
+    fail 'list --templates scopes output' "expected only template table section, got: $out"
+    return
+  fi
+  if assert_contains "$out" 'SIZE'; then
+    fail 'list --templates scopes output' "did not expect model table headers in --templates output, got: $out"
+    return
+  fi
+
+  pass 'list --templates scopes output'
+}
+
+test_list_json_and_quiet_include_templates() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set jsonqtmp user/tmpl-model:Q4_K -- --temp 0.5
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list json/quiet include templates' "template-set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --json
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list json/quiet include templates' "list --json failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local template_count
+  template_count="$(jq '[ .[] | select(.kind == "TEMPLATE") ] | length' "$stdout_file")"
+  if [[ "$template_count" -lt 1 ]]; then
+    fail 'list json/quiet include templates' "expected TEMPLATE records in json, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --quiet --templates
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'list json/quiet include templates' "list --quiet --templates failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local quiet_out
+  quiet_out="$(cat "$stdout_file")"
+  if ! assert_contains "$quiet_out" 'jsonqtmp'; then
+    fail 'list json/quiet include templates' "expected user template name in quiet output, got: $quiet_out"
+    return
+  fi
+  if ! assert_contains "$quiet_out" 'chat' || ! assert_contains "$quiet_out" 'code'; then
+    fail 'list json/quiet include templates' "expected built-in template names in quiet output, got: $quiet_out"
+    return
+  fi
+
+  pass 'list json/quiet include templates'
 }
 
 test_remove_specific_quant() {
@@ -1538,110 +1789,89 @@ test_profile_set_and_show() {
   pass 'profile show prints profile'
 }
 
-test_profile_list() {
+test_profile_removed_subcommands_error() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
-
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
-    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set writer \
-    'unsloth/llama-3-8B-it-GGUF:Q4_K_M'
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile list
-  if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile list shows all profiles' "profile list failed: $(cat "$stderr_file")"
+  if [[ $RUN_STATUS -eq 0 ]] || ! assert_contains "$(cat "$stderr_file")" 'Unknown profile subcommand'; then
+    fail 'removed profile subcommands error' "expected profile list to be rejected, got: $(cat "$stderr_file")"
     return
   fi
-
-  local out
-  out="$(cat "$stdout_file")"
-
-  if ! assert_contains "$out" 'NAME' || ! assert_contains "$out" 'MODEL'; then
-    fail 'profile list shows all profiles' "expected tabular headings in profile list output, got: $out"
-    return
-  fi
-
-  if ! assert_contains "$out" 'coder'; then
-    fail 'profile list shows all profiles' "expected 'coder' in list, got: $out"
-    return
-  fi
-
-  if ! assert_contains "$out" 'writer'; then
-    fail 'profile list shows all profiles' "expected 'writer' in list, got: $out"
-    return
-  fi
-
-  pass 'profile list shows all profiles'
-}
-
-test_profile_list_empty() {
-  local stdout_file="${TEST_DIR}/stdout"
-  local stderr_file="${TEST_DIR}/stderr"
-
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles-empty"
-
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile list
-  if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile list empty is not an error' "profile list failed: $(cat "$stderr_file")"
-    return
-  fi
-
-  if ! assert_contains "$(cat "$stdout_file")" 'No profiles found'; then
-    fail 'profile list empty is not an error' "expected 'No profiles found', got: $(cat "$stdout_file")"
-    return
-  fi
-
-  pass 'profile list empty is not an error'
-}
-
-test_profile_remove() {
-  local stdout_file="${TEST_DIR}/stdout"
-  local stderr_file="${TEST_DIR}/stderr"
-
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
-    'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile remove coder
+  if [[ $RUN_STATUS -eq 0 ]] || ! assert_contains "$(cat "$stderr_file")" 'Unknown profile subcommand'; then
+    fail 'removed profile subcommands error' "expected profile remove to be rejected, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile templates
+  if [[ $RUN_STATUS -eq 0 ]] || ! assert_contains "$(cat "$stderr_file")" 'Unknown profile subcommand'; then
+    fail 'removed profile subcommands error' "expected profile templates to be rejected, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new coder code user/model
+  if [[ $RUN_STATUS -eq 0 ]] || ! assert_contains "$(cat "$stderr_file")" 'Unknown profile subcommand'; then
+    fail 'removed profile subcommands error' "expected profile new to be rejected, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'removed profile subcommands error'
+}
+
+test_remove_profile_via_top_level_remove() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder 'demo/model:Q4_K'
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile remove deletes profile' "profile remove failed: $(cat "$stderr_file")"
+    fail 'remove/rm supports profile removal' "profile set failed: $(cat "$stderr_file")"
     return
   fi
 
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'remove/rm supports profile removal' "remove profile failed: $(cat "$stderr_file")"
+    return
+  fi
   if [[ -f "${YALLAMA_PROFILES_DIR}/coder" ]]; then
-    fail 'profile remove deletes profile' "expected profile file to be gone"
+    fail 'remove/rm supports profile removal' 'expected profile file removed by top-level remove'
     return
   fi
 
-  if ! assert_contains "$(cat "$stdout_file")" "Profile 'coder' removed."; then
-    fail 'profile remove deletes profile' "expected removal confirmation"
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder 'demo/model:Q4_K'
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" rm coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'remove/rm supports profile removal' "rm profile failed: $(cat "$stderr_file")"
+    return
+  fi
+  if [[ -f "${YALLAMA_PROFILES_DIR}/coder" ]]; then
+    fail 'remove/rm supports profile removal' 'expected profile file removed by top-level rm alias'
     return
   fi
 
-  pass 'profile remove deletes profile'
+  pass 'remove/rm supports profile removal'
 }
 
 test_profile_remove_missing_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile remove nonexistent
   if [[ $RUN_STATUS -eq 0 ]]; then
-    fail 'profile remove missing profile errors' 'expected non-zero exit'
+    fail 'profile remove subcommand removed' 'expected non-zero exit'
     return
   fi
 
-  if ! assert_contains "$(cat "$stderr_file")" "not found"; then
-    fail 'profile remove missing profile errors' "expected 'not found' error, got: $(cat "$stderr_file")"
+  if ! assert_contains "$(cat "$stderr_file")" 'Unknown profile subcommand'; then
+    fail 'profile remove subcommand removed' "expected unknown subcommand error, got: $(cat "$stderr_file")"
     return
   fi
 
-  pass 'profile remove missing profile errors'
+  pass 'profile remove subcommand removed'
 }
 
 test_profile_duplicate() {
@@ -2024,48 +2254,48 @@ PROFILE
   pass 'profile [run] section excluded for run'
 }
 
-test_profile_new_builtin_with_model() {
+test_profile_set_builtin_with_model() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
   export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
   unset YALLAMA_TEMPLATES_DIR
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new mycoder code user/qwen2.5:Q4_K
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mycoder code user/qwen2.5:Q4_K
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile new from builtin with model' "command failed: $(cat "$stderr_file")"
+    fail 'profile set from builtin with model' "command failed: $(cat "$stderr_file")"
     return
   fi
-  if ! assert_contains "$(cat "$stdout_file")" "created from template"; then
-    fail 'profile new from builtin with model' "expected success message, got: $(cat "$stdout_file")"
+  if ! assert_contains "$(cat "$stdout_file")" "saved"; then
+    fail 'profile set from builtin with model' "expected success message, got: $(cat "$stdout_file")"
     return
   fi
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile show mycoder
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile new from builtin with model' "show failed: $(cat "$stderr_file")"
+    fail 'profile set from builtin with model' "show failed: $(cat "$stderr_file")"
     return
   fi
 
   local content
   content="$(cat "$stdout_file")"
   if ! assert_contains "$content" "model=user/qwen2.5:Q4_K"; then
-    fail 'profile new from builtin with model' "expected model line, got: $content"
+    fail 'profile set from builtin with model' "expected model line, got: $content"
     return
   fi
   if ! assert_contains "$content" "--temp 0.2"; then
-    fail 'profile new from builtin with model' "expected code template flag --temp, got: $content"
+    fail 'profile set from builtin with model' "expected code template flag --temp, got: $content"
     return
   fi
   if ! assert_contains "$content" "-ngl 999"; then
-    fail 'profile new from builtin with model' "expected code template flag -ngl, got: $content"
+    fail 'profile set from builtin with model' "expected code template flag -ngl, got: $content"
     return
   fi
 
-  pass 'profile new from builtin with model'
+  pass 'profile set from builtin with model'
 }
 
-test_profile_new_builtin_no_model_errors() {
+test_profile_set_builtin_no_model_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
@@ -2073,20 +2303,20 @@ test_profile_new_builtin_no_model_errors() {
   unset YALLAMA_TEMPLATES_DIR
 
   # 'code' built-in has no model= line; no model arg provided → should error.
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new mycoder code
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mycoder code
   if [[ $RUN_STATUS -eq 0 ]]; then
-    fail 'profile new builtin no model errors' "expected failure when no model provided"
+    fail 'profile set builtin no model errors' "expected failure when no model provided"
     return
   fi
   if ! assert_contains "$(cat "$stderr_file")" "no model specified"; then
-    fail 'profile new builtin no model errors' "expected 'no model specified' error, got: $(cat "$stderr_file")"
+    fail 'profile set builtin no model errors' "expected 'no model specified' error, got: $(cat "$stderr_file")"
     return
   fi
 
-  pass 'profile new builtin no model errors'
+  pass 'profile set builtin no model errors'
 }
 
-test_profile_new_user_template() {
+test_profile_set_user_template() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
@@ -2094,16 +2324,16 @@ test_profile_new_user_template() {
   export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
 
   # Create a user-defined template with a default model.
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-set mytemplate user/mymodel:Q4_K -- --temp 0.5 --ctx-size 4096
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytemplate user/mymodel:Q4_K -- --temp 0.5 --ctx-size 4096
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile new from user template' "template-set failed: $(cat "$stderr_file")"
+    fail 'profile set from user template' "template-set failed: $(cat "$stderr_file")"
     return
   fi
 
   # Create a profile from it (no model arg — should use template's default).
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new myprofile mytemplate
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set myprofile mytemplate
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile new from user template' "profile new failed: $(cat "$stderr_file")"
+    fail 'profile set from user template' "profile set failed: $(cat "$stderr_file")"
     return
   fi
 
@@ -2111,187 +2341,192 @@ test_profile_new_user_template() {
   local content
   content="$(cat "$stdout_file")"
   if ! assert_contains "$content" "model=user/mymodel:Q4_K"; then
-    fail 'profile new from user template' "expected default model from template, got: $content"
+    fail 'profile set from user template' "expected default model from template, got: $content"
     return
   fi
   if ! assert_contains "$content" "--temp 0.5"; then
-    fail 'profile new from user template' "expected template flag --temp, got: $content"
+    fail 'profile set from user template' "expected template flag --temp, got: $content"
     return
   fi
 
-  pass 'profile new from user template'
+  pass 'profile set from user template'
 }
 
-test_profile_new_overwrite_errors() {
+test_profile_set_template_overwrites_existing() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
   export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
   unset YALLAMA_TEMPLATES_DIR
 
-  # Create it once.
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new mypro code user/model
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mypro user/original:Q4_K -- --temp 0.9
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile new overwrite errors' "first create failed: $(cat "$stderr_file")"
+    fail 'profile set template overwrites existing' "initial set failed: $(cat "$stderr_file")"
     return
   fi
 
-  # Try to create again — should fail.
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile new mypro code user/model
-  if [[ $RUN_STATUS -eq 0 ]]; then
-    fail 'profile new overwrite errors' "expected failure when profile already exists"
-    return
-  fi
-  if ! assert_contains "$(cat "$stderr_file")" "already exists"; then
-    fail 'profile new overwrite errors' "expected 'already exists' error, got: $(cat "$stderr_file")"
-    return
-  fi
-
-  pass 'profile new overwrite errors'
-}
-
-test_profile_templates_lists_builtins() {
-  local stdout_file="${TEST_DIR}/stdout"
-  local stderr_file="${TEST_DIR}/stderr"
-
-  unset YALLAMA_TEMPLATES_DIR
-
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile templates
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mypro code user/updated:Q6_K
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile templates lists builtins' "command failed: $(cat "$stderr_file")"
+    fail 'profile set template overwrites existing' "overwrite set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile show mypro
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile set template overwrites existing' "profile show failed: $(cat "$stderr_file")"
     return
   fi
 
   local out
   out="$(cat "$stdout_file")"
-  for tname in chat code; do
-    if ! assert_contains "$out" "$tname"; then
-      fail 'profile templates lists builtins' "expected '$tname' in output, got: $out"
-      return
-    fi
-  done
-  if ! assert_contains "$out" "built-in"; then
-    fail 'profile templates lists builtins' "expected 'built-in' label in output, got: $out"
+  if ! assert_contains "$out" 'model=user/updated:Q6_K'; then
+    fail 'profile set template overwrites existing' "expected updated model in profile, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" '--temp 0.2'; then
+    fail 'profile set template overwrites existing' "expected template flags in profile, got: $out"
+    return
+  fi
+  if assert_contains "$out" '--temp 0.9'; then
+    fail 'profile set template overwrites existing' "expected old profile content to be replaced, got: $out"
     return
   fi
 
-  pass 'profile templates lists builtins'
+  pass 'profile set template overwrites existing'
 }
 
-test_profile_template_show_builtin() {
+test_profile_templates_subcommand_removed() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile templates
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'profile templates subcommand removed' 'expected non-zero exit'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'Unknown profile subcommand'; then
+    fail 'profile templates subcommand removed' "expected unknown subcommand error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'profile templates subcommand removed'
+}
+
+test_template_show_builtin() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
   unset YALLAMA_TEMPLATES_DIR
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-show code
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template show code
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile template-show builtin' "command failed: $(cat "$stderr_file")"
+    fail 'template show builtin' "command failed: $(cat "$stderr_file")"
     return
   fi
 
   local out
   out="$(cat "$stdout_file")"
   if ! assert_contains "$out" "--temp 0.2"; then
-    fail 'profile template-show builtin' "expected '--temp 0.2' in code template, got: $out"
+    fail 'template show builtin' "expected '--temp 0.2' in code template, got: $out"
     return
   fi
   if ! assert_contains "$out" "-ngl 999"; then
-    fail 'profile template-show builtin' "expected '-ngl 999' in code template, got: $out"
+    fail 'template show builtin' "expected '-ngl 999' in code template, got: $out"
     return
   fi
 
-  pass 'profile template-show builtin'
+  pass 'template show builtin'
 }
 
-test_profile_template_set_and_show() {
+test_template_set_and_show() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
   export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-set mywork user/work-model -- --temp 0.3 --ctx-size 8192
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mywork user/work-model -- --temp 0.3 --ctx-size 8192
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile template-set and show' "template-set failed: $(cat "$stderr_file")"
+    fail 'template set and show' "template-set failed: $(cat "$stderr_file")"
     return
   fi
   if ! assert_contains "$(cat "$stdout_file")" "saved"; then
-    fail 'profile template-set and show' "expected 'saved' message, got: $(cat "$stdout_file")"
+    fail 'template set and show' "expected 'saved' message, got: $(cat "$stdout_file")"
     return
   fi
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-show mywork
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template show mywork
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile template-set and show' "template-show failed: $(cat "$stderr_file")"
+    fail 'template set and show' "template-show failed: $(cat "$stderr_file")"
     return
   fi
 
   local out
   out="$(cat "$stdout_file")"
   if ! assert_contains "$out" "model=user/work-model"; then
-    fail 'profile template-set and show' "expected model line, got: $out"
+    fail 'template set and show' "expected model line, got: $out"
     return
   fi
   if ! assert_contains "$out" "--temp 0.3"; then
-    fail 'profile template-set and show' "expected --temp 0.3, got: $out"
+    fail 'template set and show' "expected --temp 0.3, got: $out"
     return
   fi
 
-  pass 'profile template-set and show'
+  pass 'template set and show'
 }
 
-test_profile_template_remove() {
+test_template_remove() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
   export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-set mytmp -- --temp 0.5
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytmp -- --temp 0.5
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile template-remove' "template-set failed: $(cat "$stderr_file")"
+    fail 'template remove' "template-set failed: $(cat "$stderr_file")"
     return
   fi
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-remove mytmp
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template remove mytmp
   if [[ $RUN_STATUS -ne 0 ]]; then
-    fail 'profile template-remove' "template-remove failed: $(cat "$stderr_file")"
+    fail 'template remove' "template-remove failed: $(cat "$stderr_file")"
     return
   fi
   if ! assert_contains "$(cat "$stdout_file")" "removed"; then
-    fail 'profile template-remove' "expected 'removed' message, got: $(cat "$stdout_file")"
+    fail 'template remove' "expected 'removed' message, got: $(cat "$stdout_file")"
     return
   fi
 
   # Subsequent show should fail.
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-show mytmp
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template show mytmp
   if [[ $RUN_STATUS -eq 0 ]]; then
-    fail 'profile template-remove' "expected show to fail after removal"
+    fail 'template remove' "expected show to fail after removal"
     return
   fi
 
-  pass 'profile template-remove'
+  pass 'template remove'
 }
 
-test_profile_template_remove_builtin_errors() {
+test_template_remove_builtin_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
   unset YALLAMA_TEMPLATES_DIR
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-remove chat
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template remove chat
   if [[ $RUN_STATUS -eq 0 ]]; then
-    fail 'profile template-remove builtin errors' "expected failure when removing built-in template"
+    fail 'template remove builtin errors' "expected failure when removing built-in template"
     return
   fi
   if ! assert_contains "$(cat "$stderr_file")" "built-in"; then
-    fail 'profile template-remove builtin errors' "expected 'built-in' in error, got: $(cat "$stderr_file")"
+    fail 'template remove builtin errors' "expected 'built-in' in error, got: $(cat "$stderr_file")"
     return
   fi
 
-  pass 'profile template-remove builtin errors'
+  pass 'template remove builtin errors'
 }
 
-test_profile_template_user_overrides_builtin() {
+test_template_user_overrides_builtin() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
@@ -2304,7 +2539,7 @@ test_profile_template_user_overrides_builtin() {
 --ctx-size 1024
 EOF
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile template-show code
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template show code
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'profile user template overrides builtin' "template-show failed: $(cat "$stderr_file")"
     return
@@ -2369,6 +2604,24 @@ main() {
 
   setup_test_env
   test_list_quiet_includes_quant
+
+  setup_test_env
+  test_list_includes_profiles_and_models_sections
+
+  setup_test_env
+  test_list_models_profiles_scopes
+
+  setup_test_env
+  test_list_json_and_quiet_include_profiles
+
+  setup_test_env
+  test_list_includes_templates_section
+
+  setup_test_env
+  test_list_templates_scope
+
+  setup_test_env
+  test_list_json_and_quiet_include_templates
 
   setup_test_env
   test_remove_specific_quant
@@ -2446,13 +2699,10 @@ main() {
   test_profile_set_and_show
 
   setup_test_env
-  test_profile_list
+  test_profile_removed_subcommands_error
 
   setup_test_env
-  test_profile_list_empty
-
-  setup_test_env
-  test_profile_remove
+  test_remove_profile_via_top_level_remove
 
   setup_test_env
   test_profile_remove_missing_errors
@@ -2485,34 +2735,34 @@ main() {
   test_profile_command_sections
 
   setup_test_env
-  test_profile_new_builtin_with_model
+  test_profile_set_builtin_with_model
 
   setup_test_env
-  test_profile_new_builtin_no_model_errors
+  test_profile_set_builtin_no_model_errors
 
   setup_test_env
-  test_profile_new_user_template
+  test_profile_set_user_template
 
   setup_test_env
-  test_profile_new_overwrite_errors
+  test_profile_set_template_overwrites_existing
 
   setup_test_env
-  test_profile_templates_lists_builtins
+  test_profile_templates_subcommand_removed
 
   setup_test_env
-  test_profile_template_show_builtin
+  test_template_show_builtin
 
   setup_test_env
-  test_profile_template_set_and_show
+  test_template_set_and_show
 
   setup_test_env
-  test_profile_template_remove
+  test_template_remove
 
   setup_test_env
-  test_profile_template_remove_builtin_errors
+  test_template_remove_builtin_errors
 
   setup_test_env
-  test_profile_template_user_overrides_builtin
+  test_template_user_overrides_builtin
 
   printf '\n'
   printf 'Passed: %s\n' "$PASS_COUNT"

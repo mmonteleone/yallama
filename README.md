@@ -33,7 +33,8 @@ Or user-local (no `sudo`):
 curl -fsSL https://github.com/mmonteleone/yallama/releases/latest/download/yallama -o ~/.local/bin/yallama && chmod +x ~/.local/bin/yallama
 ```
 
-> **Note:** `~/.local/bin` may not be in your `$PATH` by default on macOS. If `yallama` isn't found after installing, add it: `export PATH="$HOME/.local/bin:$PATH"` in your shell profile.
+> [!NOTE]
+> `~/.local/bin` may not be in your `$PATH` by default on macOS. If `yallama` isn't found after installing, add it: `export PATH="$HOME/.local/bin:$PATH"` in your shell profile.
 
 Then install llama.cpp and set up shell completions:
 
@@ -47,48 +48,33 @@ yallama install
 
 ```sh
 # Find a model
-yallama search gemma --quants
+yallama search gemma
 
 # Chat with a model (downloads on first use)
 yallama run unsloth/gemma-4-26B-A4B-it-GGUF
 
-# Serve the same model as an OpenAI-compatible API + web UI at http://localhost:8080
+# Serve as an OpenAI-compatible API + web UI at http://localhost:8080
 yallama serve unsloth/gemma-4-26B-A4B-it-GGUF
 
-# List downloaded models (and their variants)
+# Pass extra llama.cpp flags after '--'
+yallama run unsloth/gemma-4-26B-A4B-it-GGUF -- -ngl 999 -c 8192
+
+# Save a profile — name + model + flags
+yallama profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
+  --ctx-size 65536 --temp 0.2 -ngl 999
+
+# Use it anywhere you'd use a model name
+yallama run coder
+
+# Or create one from a built-in template
+yallama profile set mycoder code unsloth/Qwen3.5-27B-GGUF
+
+# List everything: models, profiles, templates
 yallama list
 
-# Remove a model
+# Remove a model or profile
 yallama remove unsloth/gemma-4-26B-A4B-it-GGUF
-```
-
-Or specify quants
-
-```sh
-# Chat with a specific quant variant
-yallama run unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K
-
-# Remove only a specific quant variant
-yallama rm unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K
-```
-
-Pass extra llama.cpp flags after `--`:
-
-```sh
-yallama run unsloth/gemma-4-26B-A4B-it-GGUF -- -ngl 999 -c 8192
-yallama serve unsloth/gemma-4-26B-A4B-it-GGUF -- --port 8081
-```
-
-Or use a saved profile:
-
-```sh
-# Save a profile
-yallama profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
-  --ctx-size 65536 --temp 0.2 --top-k 20 -ngl 999
-
-# Use it — model and flags are loaded automatically
-yallama serve coder
-yallama run coder -- --temp 0.5   # extra flags appended, overriding profile
+yallama remove coder
 ```
 
 ## Commands
@@ -97,14 +83,19 @@ yallama run coder -- --temp 0.5   # extra flags appended, overriding profile
 |---|---|
 | `install` | Install llama.cpp, set up `$PATH` and shell completions |
 | `run <MODEL[:QUANT]\|PROFILE>` | Download model if needed, start chat via `llama-cli` |
-| `serve <MODEL[:QUANT]\|PROFILE>` | Download model if needed, start chat and API server via `llama-server` |
+| `serve <MODEL[:QUANT]\|PROFILE>` | Download model if needed, start API server via `llama-server` |
 | `pull <MODEL[:QUANT]>` | Download a model (or specific quant) without running it |
-| `search <QUERY>` | Search Hugging Face for llama.cpp-compatible GGUF models |
+| `search <QUERY>` | Search Hugging Face for GGUF models |
 | `browse <MODEL>` | Open a model's Hugging Face page in the browser |
-| `list` / `ls` | List downloaded models, including per-quant rows for GGUF variants |
-| `remove <MODEL[:QUANT]>` / `rm <MODEL[:QUANT]>` | Delete an entire model or just one quant variant |
-| `profile` | Manage named run/serve profiles |
-| `status` | Show installed version and optionally check for updates |
+| `list` / `ls` | List downloaded models, profiles, and templates |
+| `remove` / `rm` | Delete a model, quant variant, or profile |
+| `profile set` | Create or replace a profile (from a model or template) |
+| `profile show` | Print a profile's contents |
+| `profile duplicate` | Copy a profile to a new name |
+| `template show` | Print a template's contents |
+| `template set` | Create or replace a user-defined template |
+| `template remove` | Delete a user-defined template |
+| `status` | Show installed version and check for updates |
 | `update` | Update llama.cpp to the latest release |
 | `versions` | List installed llama.cpp versions |
 | `prune` | Remove old versions, keep current |
@@ -112,13 +103,7 @@ yallama run coder -- --temp 0.5   # extra flags appended, overriding profile
 | `ps` | Show running models |
 | `version` | Show the yallama version |
 
-For flags and per-command help:
-
-```sh
-yallama help
-yallama install --help
-yallama run --help
-```
+Run `yallama <command> --help` for per-command flags and usage.
 
 ## Shell completions
 
@@ -130,141 +115,116 @@ yallama install --shell-profile
 
 ## Model search
 
-Search Hugging Face for llama.cpp-compatible GGUF models directly from the terminal:
-
 ```sh
-# Search by keyword, sorted by trending (default)
-yallama search gemma
-
-# Show available quant variants for each result
-yallama search qwen --quants
-
-# Sort by downloads, limit results
+yallama search gemma                        # keyword search, sorted by trending
+yallama search qwen --quants                # show available quant variants
 yallama search llama --sort downloads --limit 10
-
-# Machine-readable output
-yallama search mistral --json
-yallama search mistral --quiet   # one model ID per line
-
-# Open a model's Hugging Face page in the browser
-yallama browse unsloth/gemma-4-26B-A4B-it-GGUF
-
-# Print the URL instead of opening a browser
-yallama browse unsloth/gemma-4-26B-A4B-it-GGUF --print
+yallama search mistral --json               # machine-readable
+yallama search mistral --quiet              # one model ID per line
+yallama browse unsloth/gemma-4-26B-A4B-it-GGUF        # open in browser
 ```
 
-## Model names
+## Models and quants
 
-Use the normal Hugging Face `USER/MODEL` format, with optional `:QUANT`, for example:
-
-- `unsloth/gemma-4-26B-A4B-it-GGUF`
-- `unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K`
-- `unsloth/Qwen3.5-35B-A3B-GGUF`
-
-When you include `:QUANT`, yallama passes that through to llama.cpp model selection and treats it as a separate variant for `run`, `serve`, `list` and `remove`.
+Use the standard Hugging Face `USER/MODEL` format, optionally with `:QUANT`:
 
 ```sh
-yallama list
-yallama ls --quiet
-yallama ls --json
+yallama run unsloth/gemma-4-26B-A4B-it-GGUF            # default quant
+yallama run unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K    # specific quant
 ```
 
-`yallama remove USER/MODEL:QUANT` removes only that quant variant. Omitting `:QUANT` removes the whole model.
-
-Models are stored in the standard Hugging Face cache under `~/.cache/huggingface/hub/`.
-
-## Profiles
-
-Profiles let you give a name to a model + flags combination and use it in place of a model spec:
+`yallama list` shows downloaded models, profiles, and templates in separate sections. Scope the output with `--models`, `--profiles`, or `--templates`:
 
 ```sh
+yallama list                   # all sections
+yallama ls --quiet             # machine-friendly, one entry per line
+yallama ls --json              # JSON array with a "kind" field
+yallama ls --models            # only downloaded models
+```
+
+`yallama remove USER/MODEL:QUANT` removes a single quant variant; omit `:QUANT` to remove the whole model. `yallama remove PROFILE_NAME` removes a profile.
+
+Models are stored in the standard Hugging Face cache (`~/.cache/huggingface/hub/`).
+
+## Profiles and templates
+
+A **profile** is a named model + flags combination you can use anywhere a model name is accepted:
+
+```sh
+# Create a profile from a model spec and flags
 yallama profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
-  --ctx-size 65536 \
-  --n-predict 4096 \
-  --temp 0.2 \
-  --top-k 20 \
-  --repeat-penalty 1.05 \
-  --flash-attn on \
-  -ngl 999
+  --ctx-size 65536 --temp 0.2 -ngl 999
 
+# Use it with run or serve
+yallama run coder
 yallama serve coder
+yallama run coder -- --temp 0.5   # extra flags override profile flags
 ```
 
-Profile subcommands:
+A **template** is a reusable set of flags that can seed profiles. Yallama ships two built-in templates:
 
-| Subcommand | What it does |
-|---|---|
-| `profile set <NAME> <MODEL> [-- <flags>]` | Create or replace a profile |
-| `profile list` | List all saved profiles |
-| `profile show <NAME>` | Print a profile's contents |
-| `profile remove <NAME>` | Delete a profile |
-| `profile duplicate <SOURCE> <DEST>` | Copy a profile to a new name |
-| `profile new <NAME> <TEMPLATE> [<MODEL>]` | Create a profile from a template |
-| `profile templates` | List all available templates |
-| `profile template-show <TEMPLATE>` | Print a template's contents |
-| `profile template-set <TEMPLATE> [<MODEL>] [-- <flags>]` | Create or replace a user-defined template |
-| `profile template-remove <TEMPLATE>` | Delete a user-defined template |
-
-Profiles are stored as plain text files in `~/.config/yallama/profiles/`. Each file has a `model=` line followed by one flag-and-value pair per line:
-
-```
-model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
---temp 0.2
---flash-attn on
--ngl 999
-```
-
-Some flags are only valid for one command — for example, `--cache-reuse` is only supported by `llama-server` (`serve`), not `llama-cli` (`run`). Use `[serve]` and `[run]` section headers to scope flags to the appropriate command. Flags before any section header are passed to both:
-
-```
-model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
-# common flags (passed to both run and serve)
---ctx-size 65536
---n-predict 4096
---temp 0.2
---top-k 20
---repeat-penalty 1.05
---flash-attn on
--ngl 999
-
-[serve]
-# only passed to llama-server
---cache-reuse 256
-```
-
-Section headers are added by editing the profile file directly. `profile set` creates a flat (no-section) profile.
-
-### Templates
-
-Templates are reusable flag presets that you can use to quickly create profiles. Yallama includes a couple built-in templates:
-
-| Template | Best for | Key flags |
+| Template | Use case | Key flags |
 |---|---|---|
-| `chat` | Conversational use | `--temp 0.8 --ctx-size 8192` |
-| `code` | Coding assistants | `--temp 0.2 --ctx-size 65536` |
+| `chat` | Conversational | `--temp 0.8 --ctx-size 8192` |
+| `code` | Coding | `--temp 0.2 --ctx-size 65536` |
 
-Create a profile from a built-in template by supplying the model:
+Create a profile from a template:
 
 ```sh
-yallama profile new mycoder code unsloth/Qwen3.5-27B-GGUF:UD-Q5_K_XL
+yallama profile set mycoder code unsloth/Qwen3.5-27B-GGUF
 yallama run mycoder
 ```
 
-If a template includes a `model=` line (user-defined templates can embed one), the model argument is optional:
+Create your own templates with `template set`. If a template includes a `model=` line, the model argument is optional when creating profiles from it:
 
 ```sh
-# Create a team template with a pinned model and shared flags
-yallama profile template-set work-chat user/our-llm:Q4_K -- --temp 0.6 --ctx-size 16384
+# Create a team template with a pinned model
+yallama template set work-chat user/our-llm:Q4_K -- --temp 0.6 --ctx-size 16384
 
 # Create profiles from it — model comes from the template
-yallama profile new alice-chat work-chat
-yallama profile new bob-chat work-chat
+yallama profile set alice-chat work-chat
+yallama profile set bob-chat work-chat
 
-# Override the model for a specific profile
-yallama profile new test-chat work-chat user/new-llm:Q4_K
+# Override the model for one profile
+yallama profile set test-chat work-chat user/new-llm:Q4_K
 ```
 
-Templates are stored as plain text files in `~/.config/yallama/templates/` and have the same format as profiles (`model=` is optional). Built-in templates are always available and cannot be removed, but a user-defined template with the same name takes precedence.
+Other profile and template commands:
+
+```sh
+yallama profile show coder          # print a profile's contents
+yallama profile duplicate coder coder2
+yallama template show code          # print a template's contents
+yallama template remove work-chat   # delete a user-defined template
+yallama remove coder                # delete a profile
+```
+
+### Profile file format
+
+Profiles are plain text files in `~/.config/yallama/profiles/`. Each has a `model=` line followed by flags, one per line:
+
+```
+model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
+--ctx-size 65536
+--temp 0.2
+-ngl 999
+```
+
+Use `[run]` and `[serve]` section headers to scope flags to a specific command. Flags before any header apply to both:
+
+```
+model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
+--ctx-size 65536
+--temp 0.2
+-ngl 999
+
+[serve]
+--cache-reuse 256
+```
+
+Section headers are added by editing the file directly; `profile set` creates flat (no-section) profiles.
+
+Templates use the same format (`model=` is optional) and are stored in `~/.config/yallama/templates/`. Built-in templates cannot be removed, but a user-defined template with the same name takes precedence.
 
 ## Configuration
 
@@ -295,7 +255,7 @@ Both steps prompt for confirmation. Add `--force` to skip prompts.
 ## Compatibility
 
 - macOS arm64 / x86_64 and Linux x86_64 / arm64
-- Tools: **curl**, **tar**, **jq**, and standard POSIX userland tools
+- Tools: `curl`, `tar`, `jq`, and standard POSIX userland tools
 - fish, zsh, and bash for PATH/completion setup
 - `install` and `update` are atomic
 - `remove` refuses to delete models that are currently in use
