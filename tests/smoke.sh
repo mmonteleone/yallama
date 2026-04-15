@@ -946,6 +946,25 @@ write_hf_search_fixture() {
     "siblings": [
       {"rfilename": "gemma-small-F16.gguf"}
     ]
+  },
+  {
+    "modelId": "demo/gemma-raw-GGUF",
+    "downloads": 456,
+    "likes": 7,
+    "siblings": [
+      {"rfilename": "gemma-raw.gguf"}
+    ]
+  },
+  {
+    "modelId": "demo/not-gguf-transformers",
+    "downloads": 999999,
+    "likes": 999,
+    "library_name": "transformers",
+    "tags": ["transformers", "safetensors"],
+    "siblings": [
+      {"rfilename": "model.safetensors"},
+      {"rfilename": "README.md"}
+    ]
   }
 ]
 EOF
@@ -993,6 +1012,16 @@ test_search_returns_results() {
     return
   fi
 
+  if ! assert_contains "$out" 'demo/gemma-raw-GGUF'; then
+    fail 'search returns tabular results' "expected 'demo/gemma-raw-GGUF' in output, got: $out"
+    return
+  fi
+
+  if assert_contains "$out" 'demo/not-gguf-transformers'; then
+    fail 'search returns tabular results' "expected non-GGUF model to be excluded, got: $out"
+    return
+  fi
+
   pass 'search returns tabular results'
 }
 
@@ -1016,8 +1045,18 @@ test_search_quiet() {
     return
   fi
 
+  if ! assert_contains "$out" 'demo/gemma-raw-GGUF'; then
+    fail 'search --quiet prints only names' "expected model without parseable quant in quiet output, got: $out"
+    return
+  fi
+
   if assert_contains "$out" 'MODEL'; then
     fail 'search --quiet prints only names' "unexpected column header in quiet output"
+    return
+  fi
+
+  if assert_contains "$out" 'demo/not-gguf-transformers'; then
+    fail 'search --quiet prints only names' "expected non-GGUF model to be excluded, got: $out"
     return
   fi
 
@@ -1047,6 +1086,11 @@ test_search_json() {
   dl_val="$(jq -r '.[0].downloads' "$stdout_file")"
   if [[ "$dl_val" != '12345' ]]; then
     fail 'search --json output' "expected downloads '12345', got '$dl_val'"
+    return
+  fi
+
+  if [[ "$(jq 'length' "$stdout_file")" -ne 3 ]]; then
+    fail 'search --json output' "expected 3 GGUF results in fixture output, got: $(cat "$stdout_file")"
     return
   fi
 
@@ -1192,6 +1236,11 @@ test_search_quants_quiet() {
 
   if ! assert_contains "$out" 'demo/gemma-small-GGUF:F16'; then
     fail 'search --quants --quiet prints MODEL:QUANT lines' "expected 'demo/gemma-small-GGUF:F16', got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'demo/gemma-raw-GGUF'; then
+    fail 'search --quants --quiet prints MODEL:QUANT lines' "expected model without parseable quant to still be listed, got: $out"
     return
   fi
 

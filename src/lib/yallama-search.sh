@@ -14,7 +14,8 @@ Options:
   --sort <by>   Sort order: trending (default), downloads, likes, newest.
   --limit <n>   Maximum number of results. Defaults to 20.
   --quants      Also show available quant variants per model.
-                With --quiet: prints one MODEL:QUANT per line.
+                With --quiet: prints one MODEL:QUANT per line when quants exist,
+                otherwise prints MODEL.
                 With --json: adds a quants array field per model.
   --quiet       Print only model identifiers, one per line.
   --json        Output as a JSON array with name, downloads, and likes fields.
@@ -30,7 +31,7 @@ EOF
 #   default_quant select the 'best default' GGUF: prefer Q4_K_M, then Q4_0,
 #                 then the lexicographically first GGUF found.
 # shellcheck disable=SC2016  # $ signs are jq regex anchors, not bash variables
-_jq_quants_def='def quant_rank: if test("^F32$") then -32 elif test("^(BF16|F16)$") then -16 elif test("^(?:[A-Z]{2}[-_])?I?Q[0-9]+") then (capture("^(?:[A-Z]{2}[-_])?I?Q(?<n>[0-9]+)") | .n | tonumber | -.) else 0 end; def quants: [.siblings[]? | select(.rfilename | test("[.]gguf$")) | .rfilename | split("/") | last | gsub("[.]gguf$"; "") | gsub("-[0-9]+-of-[0-9]+$"; "") | capture("[-._](?<q>(?:[A-Z]{2}[-_])?(?:I?Q[0-9]+(?:_[A-Z0-9]+)*|F16|BF16|F32))$")? | .q] | unique | sort_by(quant_rank); def default_quant: [.siblings[]? | select(.rfilename | test("[.]gguf$")) | .rfilename] as $files | ((([$files[] | select(test("Q4_K_M[.-]"; "i"))] | sort | .[0]) // ([$files[] | select(test("Q4_0[.-]"; "i"))] | sort | .[0]) // ($files | sort | .[0])) as $f | if $f != null then (($f | split("/") | last | gsub("[.]gguf$"; "") | gsub("-[0-9]+-of-[0-9]+$"; "")) as $stem | (($stem | capture("[-._](?<q>(?:[A-Z]{2}[-_])?(?:I?Q[0-9]+(?:_[A-Z0-9]+)*|F16|BF16|F32))$")? | .q) // $stem)) else null end);'
+_jq_quants_def='def quant_rank: if test("^F32$") then -32 elif test("^(BF16|F16)$") then -16 elif test("^(?:[A-Z]{2}[-_])?I?Q[0-9]+") then (capture("^(?:[A-Z]{2}[-_])?I?Q(?<n>[0-9]+)") | .n | tonumber | -.) else 0 end; def gguf_files: [.siblings[]? | .rfilename | select(type == "string" and test("[.]gguf$"; "i"))]; def has_gguf_tag: (((.tags // []) | map(ascii_downcase) | index("gguf")) != null); def has_gguf: ((gguf_files | length > 0) or ((.library_name // "" | ascii_downcase) == "gguf") or has_gguf_tag); def quants: [gguf_files[] | split("/") | last | gsub("[.]gguf$"; "") | gsub("-[0-9]+-of-[0-9]+$"; "") | (capture("[-._](?<q>(?:[A-Z]{2}[-_])?(?:I?Q[0-9]+(?:_[A-Z0-9]+)*|F16|BF16|F32))$")? | .q) | select(type == "string")] | unique | sort_by(quant_rank); def default_quant: gguf_files as $files | ((([$files[] | select(test("Q4_K_M[.-]"; "i"))] | sort | .[0]) // ([$files[] | select(test("Q4_0[.-]"; "i"))] | sort | .[0]) // ($files | sort | .[0])) as $f | if $f != null then (($f | split("/") | last | gsub("[.]gguf$"; "") | gsub("-[0-9]+-of-[0-9]+$"; "")) as $stem | (($stem | capture("[-._](?<q>(?:[A-Z]{2}[-_])?(?:I?Q[0-9]+(?:_[A-Z0-9]+)*|F16|BF16|F32))$")? | .q) // $stem)) else null end);'
 
 cmd_search() {
   if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
@@ -59,6 +60,9 @@ cmd_search() {
     esac
   done
 
+  [[ "$limit" =~ ^[0-9]+$ ]] || die "invalid --limit value '${limit}': must be a positive integer"
+  (( limit > 0 )) || die "invalid --limit value '${limit}': must be greater than zero"
+
   local api_sort
   case "$sort_by" in
     trending)  api_sort="trendingScore" ;;
@@ -80,8 +84,12 @@ cmd_search() {
   encoded_query="$(printf '%s' "$query" | jq -Rr @uri)"
 
   # library=gguf: HF API filter that limits results to repos tagged as GGUF format.
-  # full=true: include sibling (file list) data needed to extract quant names.
-  local url="https://huggingface.co/api/models?search=${encoded_query}&library=gguf&sort=${api_sort}&direction=-1&limit=${limit}&full=true"
+  # full=true: include sibling (file list) data needed for quant extraction.
+  # Fetch more than the requested limit so optional quant details still have rich metadata.
+  local fetch_limit=$(( limit * 5 ))
+  (( fetch_limit < 200 )) && fetch_limit=200
+  (( fetch_limit > 500 )) && fetch_limit=500
+  local url="https://huggingface.co/api/models?search=${encoded_query}&library=gguf&sort=${api_sort}&direction=-1&limit=${fetch_limit}&full=true"
 
   # ${auth_header[@]+"${auth_header[@]}"}: safely expand an array that might
   # be empty under 'set -u'. If auth_header has no elements, this expands to
@@ -97,7 +105,8 @@ cmd_search() {
     "$url")"
 
   local count
-  count="$(printf '%s' "$results" | jq 'length')"
+  count="$(printf '%s' "$results" | jq "${_jq_quants_def}"'
+    [.[] | select(has_gguf)] | length')"
 
   if [[ "$count" -eq 0 ]]; then
     if [[ "$json" == "true" ]]; then
@@ -111,18 +120,18 @@ cmd_search() {
   if [[ "$json" == "true" ]]; then
     if [[ "$quants" == "true" ]]; then
       printf '%s' "$results" | jq "${_jq_quants_def}"'
-        [.[] | select(quants | length > 0) | {name: .modelId, downloads: .downloads, likes: .likes, quants: quants, default_quant: default_quant}]'
+        [.[] | select(has_gguf) | {name: .modelId, downloads: .downloads, likes: .likes, quants: quants, default_quant: default_quant}][0:'"${limit}"']'
     else
       printf '%s' "$results" | jq "${_jq_quants_def}"'
-        [.[] | select(quants | length > 0) | {name: .modelId, downloads: .downloads, likes: .likes}]'
+        [.[] | select(has_gguf) | {name: .modelId, downloads: .downloads, likes: .likes}][0:'"${limit}"']'
     fi
   elif [[ "$quiet" == "true" ]]; then
     if [[ "$quants" == "true" ]]; then
       printf '%s' "$results" | jq -r "${_jq_quants_def}"'
-        .[] | select(quants | length > 0) | .modelId as $m | quants[] | $m + ":" + .'
+        [.[] | select(has_gguf)][0:'"${limit}"'][] | .modelId as $m | (quants | if length > 0 then .[] | ($m + ":" + .) else $m end)'
     else
       printf '%s' "$results" | jq -r "${_jq_quants_def}"'
-        .[] | select(quants | length > 0) | .modelId'
+        [.[] | select(has_gguf)][0:'"${limit}"'][] | .modelId'
     fi
   else
     printf '%-60s  %10s  %s\n' 'MODEL' 'DOWNLOADS' 'LIKES'
@@ -133,15 +142,17 @@ cmd_search() {
       # field splitting even when values contain spaces.
       printf '%s' "$results" \
         | jq -r "${_jq_quants_def}"'
-            .[] | select(quants | length > 0) | [.modelId, (.downloads // 0 | tostring), (.likes // 0 | tostring), (default_quant as $dq | quants | map(if . == $dq then "*" + . else . end) | join(" "))] | @tsv' \
+            [.[] | select(has_gguf)][0:'"${limit}"'][] | [.modelId, (.downloads // 0 | tostring), (.likes // 0 | tostring), (default_quant as $dq | quants | map(if . == $dq then "*" + . else . end) | join(" "))] | @tsv' \
         | while IFS=$'\t' read -r name downloads likes qtags; do
             printf '%-60s  %10s  %s\n' "$name" "$downloads" "$likes"
-            [[ -n "$qtags" ]] && printf '  %s\n' "$qtags"
+            if [[ -n "$qtags" ]]; then
+              printf '  %s\n' "$qtags"
+            fi
           done
     else
       printf '%s' "$results" \
         | jq -r "${_jq_quants_def}"'
-            .[] | select(quants | length > 0) | [.modelId, (.downloads // 0 | tostring), (.likes // 0 | tostring)] | @tsv' \
+              [.[] | select(has_gguf)][0:'"${limit}"'][] | [.modelId, (.downloads // 0 | tostring), (.likes // 0 | tostring)] | @tsv' \
         | while IFS=$'\t' read -r name downloads likes; do
             printf '%-60s  %10s  %s\n' "$name" "$downloads" "$likes"
           done
