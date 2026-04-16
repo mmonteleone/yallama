@@ -1,4 +1,4 @@
-# Shared utility helpers for yallama.
+# Shared utility helpers for fold.
 # shellcheck shell=bash
 
 # Print an error message to stderr and exit non-zero.
@@ -44,7 +44,7 @@ shell_profile_edits_allowed() {
         SHELL_PROFILE_EDIT_DECISION="deny"
         return 1
       fi
-      if confirm_action "Allow yallama to edit your shell profile for PATH/completion loading?"; then
+      if confirm_action "Allow fold to edit your shell profile for PATH/completion loading?"; then
         SHELL_PROFILE_EDIT_DECISION="allow"
         return 0
       fi
@@ -103,7 +103,7 @@ require_cmds() {
 # the shell's built-in tilde expansion does not apply to variable assignments
 # or values that come from other variables.
 ensure_llama_in_path() {
-  local install_root="${YALLAMA_INSTALL_ROOT:-$DEFAULT_INSTALL_ROOT}"
+  local install_root="${FOLD_INSTALL_ROOT:-$DEFAULT_INSTALL_ROOT}"
   # ${x/#\~/$HOME}: bash string substitution anchored to the start (#).
   # Replaces a literal '~' at position 0 with the real HOME path; necessary
   # because tilde expansion only happens at parse time, not in variable values.

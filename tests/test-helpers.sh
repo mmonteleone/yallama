@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared test harness for yallama tests.
+# Shared test harness for fold tests.
 # Source this file from individual test scripts.
 
 set -euo pipefail
@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[1]}")/.." && pwd)"
 # SCRIPT_PATH and RUN_STATUS are read by the scripts that source this file.
 # shellcheck disable=SC2034
-SCRIPT_PATH="${ROOT_DIR}/src/yallama.sh"
+SCRIPT_PATH="${ROOT_DIR}/src/fold.sh"
 TEST_ROOT="$(mktemp -d)"
 
 PASS_COUNT=0
@@ -75,24 +75,24 @@ run_cmd() {
   set -e
 }
 
-# Source the yallama modules into the current shell for unit testing.
+# Source the fold modules into the current shell for unit testing.
 # Sets up required global variables and sources all lib modules.
-source_yallama_libs() {
-  SCRIPT_NAME="yallama"
+source_fold_libs() {
+  SCRIPT_NAME="fold"
   DEFAULT_INSTALL_ROOT="${HOME}/.llama.cpp"
-  DEFAULT_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-  DEFAULT_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+  DEFAULT_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  DEFAULT_TEMPLATES_DIR="${HOME}/.config/fold/templates"
   HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
   SHELL_PROFILE_EDIT_DECISION=""
-  # shellcheck disable=SC2034  # YALLAMA_VERSION is read by the sourced lib modules
-  YALLAMA_VERSION="dev"
+  # shellcheck disable=SC2034  # FOLD_VERSION is read by the sourced lib modules
+  FOLD_VERSION="dev"
 
-  source "${ROOT_DIR}/src/lib/yallama-helpers.sh"
-  source "${ROOT_DIR}/src/lib/yallama-cache.sh"
-  source "${ROOT_DIR}/src/lib/yallama-profiles.sh"
-  source "${ROOT_DIR}/src/lib/yallama-runtime.sh"
-  source "${ROOT_DIR}/src/lib/yallama-search.sh"
-  source "${ROOT_DIR}/src/lib/yallama-completions.sh"
+  source "${ROOT_DIR}/src/lib/fold-helpers.sh"
+  source "${ROOT_DIR}/src/lib/fold-cache.sh"
+  source "${ROOT_DIR}/src/lib/fold-profiles.sh"
+  source "${ROOT_DIR}/src/lib/fold-runtime.sh"
+  source "${ROOT_DIR}/src/lib/fold-search.sh"
+  source "${ROOT_DIR}/src/lib/fold-completions.sh"
 }
 
 report_results() {

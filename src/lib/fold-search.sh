@@ -1,4 +1,4 @@
-# Search and browse helpers for yallama.
+# Search and browse helpers for fold.
 # shellcheck shell=bash
 
 cmd_search_usage() {

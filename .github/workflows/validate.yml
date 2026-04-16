@@ -18,7 +18,7 @@ jobs:
             sudo apt-get install -y shellcheck
           fi
       - name: Lint script
-        run: shellcheck src/yallama.sh tools/build-standalone.sh src/lib/*.sh tests/smoke.sh tests/unit.sh tests/test-helpers.sh
+        run: shellcheck src/fold.sh tools/build.sh src/lib/*.sh tests/smoke.sh tests/unit.sh tests/test-helpers.sh
 
   smoke:
     name: Smoke (${{ matrix.os }})

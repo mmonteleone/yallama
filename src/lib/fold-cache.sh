@@ -1,4 +1,4 @@
-# Cache and quant helpers for yallama.
+# Cache and quant helpers for fold.
 # shellcheck shell=bash
 
 # Parse "user/model[:quant]" into globals REPLY_MODEL and REPLY_QUANT.
@@ -595,7 +595,7 @@ EOF
 }
 
 cmd_remove() {
-  # Idiomatic help/no-args guard used throughout yallama:
+  # Idiomatic help/no-args guard used throughout fold:
   # With no args: print usage to stderr and return 1 (error).
   # With -h/--help: print usage to stdout and return 0 (success).
   if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT_PATH="${ROOT_DIR}/src/yallama.sh"
+SCRIPT_PATH="${ROOT_DIR}/src/fold.sh"
 TEST_ROOT="$(mktemp -d)"
 
 PASS_COUNT=0
@@ -143,28 +143,28 @@ done
   exit 1
 }
 
-printf '%s\n' "$url" >>"${YALLAMA_TEST_LOG_DIR}/curl.log"
+printf '%s\n' "$url" >>"${FOLD_TEST_LOG_DIR}/curl.log"
 
 if [[ "$url" == *"/releases/latest" ]]; then
-  tag="$(cat "${YALLAMA_TEST_STATE_DIR}/latest-tag")"
-  cat "${YALLAMA_TEST_FIXTURES_DIR}/release-${tag}.json"
+  tag="$(cat "${FOLD_TEST_STATE_DIR}/latest-tag")"
+  cat "${FOLD_TEST_FIXTURES_DIR}/release-${tag}.json"
   exit 0
 fi
 
 if [[ "$url" == *"/releases/tags/"* ]]; then
   tag="${url##*/}"
-  cat "${YALLAMA_TEST_FIXTURES_DIR}/release-${tag}.json"
+  cat "${FOLD_TEST_FIXTURES_DIR}/release-${tag}.json"
   exit 0
 fi
 
 if [[ "$url" == *"/downloads/"* ]]; then
   asset_name="${url##*/}"
-  cp "${YALLAMA_TEST_FIXTURES_DIR}/${asset_name}" "$output"
+  cp "${FOLD_TEST_FIXTURES_DIR}/${asset_name}" "$output"
   exit 0
 fi
 
 if [[ "$url" == *"huggingface.co/api/models"* ]]; then
-  fixture="${YALLAMA_TEST_FIXTURES_DIR}/hf-search-results.json"
+  fixture="${FOLD_TEST_FIXTURES_DIR}/hf-search-results.json"
   if [[ -f "$fixture" ]]; then
     cat "$fixture"
   else
@@ -183,7 +183,7 @@ write_mock_open() {
   local path="$1"
   cat >"$path" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$1" >>"${YALLAMA_TEST_LOG_DIR}/open.log"
+printf '%s\n' "$1" >>"${FOLD_TEST_LOG_DIR}/open.log"
 EOF
   chmod +x "$path"
 }
@@ -212,9 +212,9 @@ EOF
 test_generated_standalone_script() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
-  local generated_script="${TEST_DIR}/yallama-standalone"
+  local generated_script="${TEST_DIR}/fold-standalone"
 
-  run_cmd "$stdout_file" "$stderr_file" bash "${ROOT_DIR}/tools/build-standalone.sh" --output "$generated_script"
+  run_cmd "$stdout_file" "$stderr_file" bash "${ROOT_DIR}/tools/build.sh" --output "$generated_script"
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'generated standalone script builds' "expected build to succeed: $(cat "$stderr_file")"
     return
@@ -238,12 +238,12 @@ test_generated_standalone_script() {
 setup_test_env() {
   TEST_DIR="$(mktemp -d "${TEST_ROOT}/case.XXXXXX")"
   export HOME="${TEST_DIR}/home"
-  export YALLAMA_TEST_FIXTURES_DIR="${TEST_DIR}/fixtures"
-  export YALLAMA_TEST_STATE_DIR="${TEST_DIR}/state"
-  export YALLAMA_TEST_LOG_DIR="${TEST_DIR}/logs"
+  export FOLD_TEST_FIXTURES_DIR="${TEST_DIR}/fixtures"
+  export FOLD_TEST_STATE_DIR="${TEST_DIR}/state"
+  export FOLD_TEST_LOG_DIR="${TEST_DIR}/logs"
   export PATH="${TEST_DIR}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
-  mkdir -p "$HOME" "$YALLAMA_TEST_FIXTURES_DIR" "$YALLAMA_TEST_STATE_DIR" "$YALLAMA_TEST_LOG_DIR" "${TEST_DIR}/bin"
+  mkdir -p "$HOME" "$FOLD_TEST_FIXTURES_DIR" "$FOLD_TEST_STATE_DIR" "$FOLD_TEST_LOG_DIR" "${TEST_DIR}/bin"
   write_mock_curl "${TEST_DIR}/bin/curl"
   write_mock_open "${TEST_DIR}/bin/open"
   write_mock_open "${TEST_DIR}/bin/xdg-open"
@@ -287,9 +287,9 @@ test_install_flow() {
   local stderr_file="${TEST_DIR}/stderr"
 
   arch="$(expected_arch)"
-  create_fixture_tarball "$YALLAMA_TEST_FIXTURES_DIR" 'b1000' "$arch"
-  write_release_json "$YALLAMA_TEST_FIXTURES_DIR" 'b1000' "$arch"
-  write_latest_pointer "$YALLAMA_TEST_STATE_DIR" 'b1000'
+  create_fixture_tarball "$FOLD_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_release_json "$FOLD_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_latest_pointer "$FOLD_TEST_STATE_DIR" 'b1000'
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --no-shell-profile
 
@@ -313,7 +313,7 @@ test_install_flow() {
     return
   fi
 
-  if ! assert_contains "$(cat "${YALLAMA_TEST_LOG_DIR}/curl.log")" "llama-b1000-bin-${arch}.tar.gz"; then
+  if ! assert_contains "$(cat "${FOLD_TEST_LOG_DIR}/curl.log")" "llama-b1000-bin-${arch}.tar.gz"; then
     fail 'arch detection in install flow' 'expected asset download to match detected architecture'
     return
   fi
@@ -329,19 +329,19 @@ test_update_flow() {
   local stderr_file="${TEST_DIR}/stderr"
 
   arch="$(expected_arch)"
-  create_fixture_tarball "$YALLAMA_TEST_FIXTURES_DIR" 'b1000' "$arch"
-  create_fixture_tarball "$YALLAMA_TEST_FIXTURES_DIR" 'b1001' "$arch"
-  write_release_json "$YALLAMA_TEST_FIXTURES_DIR" 'b1000' "$arch"
-  write_release_json "$YALLAMA_TEST_FIXTURES_DIR" 'b1001' "$arch"
+  create_fixture_tarball "$FOLD_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  create_fixture_tarball "$FOLD_TEST_FIXTURES_DIR" 'b1001' "$arch"
+  write_release_json "$FOLD_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_release_json "$FOLD_TEST_FIXTURES_DIR" 'b1001' "$arch"
 
-  write_latest_pointer "$YALLAMA_TEST_STATE_DIR" 'b1000'
+  write_latest_pointer "$FOLD_TEST_STATE_DIR" 'b1000'
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --no-shell-profile
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'mocked update flow' "initial install failed: $(cat "$stderr_file")"
     return
   fi
 
-  write_latest_pointer "$YALLAMA_TEST_STATE_DIR" 'b1001'
+  write_latest_pointer "$FOLD_TEST_STATE_DIR" 'b1001'
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" update --path "$install_root" --no-shell-profile
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'mocked update flow' "update failed: $(cat "$stderr_file")"
@@ -377,7 +377,7 @@ test_pull_noninteractive() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' "$*" >"$YALLAMA_LLAMA_CLI_ARGS_LOG"
+printf '%s\n' "$*" >"$FOLD_LLAMA_CLI_ARGS_LOG"
 
 if [[ -t 0 ]]; then
   echo 'stdin should not be attached to a terminal during pull' >&2
@@ -389,14 +389,14 @@ if read -r _; then
   exit 43
 fi
 
-mkdir -p "$YALLAMA_EXPECTED_CACHE_DIR"
+mkdir -p "$FOLD_EXPECTED_CACHE_DIR"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
 
-  export YALLAMA_INSTALL_ROOT="$install_root"
-  export YALLAMA_EXPECTED_CACHE_DIR="$expected_cache_dir"
-  export YALLAMA_LLAMA_CLI_ARGS_LOG="$args_log"
+  export FOLD_INSTALL_ROOT="$install_root"
+  export FOLD_EXPECTED_CACHE_DIR="$expected_cache_dir"
+  export FOLD_LLAMA_CLI_ARGS_LOG="$args_log"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_name"
 
@@ -448,17 +448,17 @@ test_pull_quant_not_confused_by_other_cached_quant() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' "$*" >"$YALLAMA_LLAMA_CLI_ARGS_LOG"
-mkdir -p "$YALLAMA_EXPECTED_CACHE_DIR/snapshots/def456"
-: >"$YALLAMA_EXPECTED_CACHE_DIR/snapshots/def456/$YALLAMA_NEW_QUANT_FILENAME"
+printf '%s\n' "$*" >"$FOLD_LLAMA_CLI_ARGS_LOG"
+mkdir -p "$FOLD_EXPECTED_CACHE_DIR/snapshots/def456"
+: >"$FOLD_EXPECTED_CACHE_DIR/snapshots/def456/$FOLD_NEW_QUANT_FILENAME"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
 
-  export YALLAMA_INSTALL_ROOT="$install_root"
-  export YALLAMA_LLAMA_CLI_ARGS_LOG="$args_log"
-  export YALLAMA_EXPECTED_CACHE_DIR="$cache_dir"
-  export YALLAMA_NEW_QUANT_FILENAME='test-UD-Q4_K_M.gguf'
+  export FOLD_INSTALL_ROOT="$install_root"
+  export FOLD_LLAMA_CLI_ARGS_LOG="$args_log"
+  export FOLD_EXPECTED_CACHE_DIR="$cache_dir"
+  export FOLD_NEW_QUANT_FILENAME='test-UD-Q4_K_M.gguf'
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_spec"
 
@@ -497,9 +497,9 @@ test_status_and_versions() {
   local arch
 
   arch="$(expected_arch)"
-  create_fixture_tarball "$YALLAMA_TEST_FIXTURES_DIR" 'b1002' "$arch"
-  write_release_json "$YALLAMA_TEST_FIXTURES_DIR" 'b1002' "$arch"
-  write_latest_pointer "$YALLAMA_TEST_STATE_DIR" 'b1002'
+  create_fixture_tarball "$FOLD_TEST_FIXTURES_DIR" 'b1002' "$arch"
+  write_release_json "$FOLD_TEST_FIXTURES_DIR" 'b1002' "$arch"
+  write_latest_pointer "$FOLD_TEST_STATE_DIR" 'b1002'
 
   mkdir -p "${install_root}/llama-b1000" "${install_root}/llama-b1001"
   ln -sfn "${install_root}/llama-b1001" "${install_root}/current"
@@ -641,7 +641,7 @@ test_run_and_serve_forwarding() {
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >"$YALLAMA_RUN_ARGS_LOG"
+printf '%s\n' "$*" >"$FOLD_RUN_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
@@ -649,14 +649,14 @@ EOF
   cat >"${current_link}/llama-server" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >"$YALLAMA_SERVE_ARGS_LOG"
+printf '%s\n' "$*" >"$FOLD_SERVE_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-server"
 
-  export YALLAMA_INSTALL_ROOT="$install_root"
-  export YALLAMA_RUN_ARGS_LOG="$run_args_log"
-  export YALLAMA_SERVE_ARGS_LOG="$serve_args_log"
+  export FOLD_INSTALL_ROOT="$install_root"
+  export FOLD_RUN_ARGS_LOG="$run_args_log"
+  export FOLD_SERVE_ARGS_LOG="$serve_args_log"
   export HF_TOKEN='hf_test_token'
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run demo/run-model -- --threads 4
@@ -792,7 +792,7 @@ test_list_includes_profiles_and_models_sections() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
 
   create_gguf_fixture "models--demo--combo-GGUF" "combo-Q4_K_M.gguf" 1024
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder 'demo/combo-GGUF:Q4_K_M'
@@ -829,7 +829,7 @@ test_list_models_profiles_scopes() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
 
   create_gguf_fixture "models--demo--scope-GGUF" "scope-Q8_0.gguf" 1024
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set scoped 'demo/scope-GGUF:Q8_0'
@@ -873,7 +873,7 @@ test_list_json_and_quiet_include_profiles() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
 
   create_gguf_fixture "models--demo--jsonq-GGUF" "jsonq-UD-Q6_K.gguf" 1024
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set jcoder 'demo/jsonq-GGUF:UD-Q6_K'
@@ -930,7 +930,7 @@ test_list_includes_templates_section() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytmp user/tmpl-model:Q4_K -- --temp 0.5
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -966,7 +966,7 @@ test_list_templates_scope() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set onlytmp user/tmpl-model:Q4_K -- --temp 0.5
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -998,7 +998,7 @@ test_list_json_and_quiet_include_templates() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set jsonqtmp user/tmpl-model:Q4_K -- --temp 0.5
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1179,13 +1179,13 @@ test_pull_quant_match_is_case_insensitive() {
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >"$YALLAMA_LLAMA_CLI_ARGS_LOG"
+printf '%s\n' "$*" >"$FOLD_LLAMA_CLI_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
 
-  export YALLAMA_INSTALL_ROOT="$install_root"
-  export YALLAMA_LLAMA_CLI_ARGS_LOG="$args_log"
+  export FOLD_INSTALL_ROOT="$install_root"
+  export FOLD_LLAMA_CLI_ARGS_LOG="$args_log"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_spec"
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1270,7 +1270,7 @@ test_search_returns_results() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1313,7 +1313,7 @@ test_search_quiet() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quiet
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1351,7 +1351,7 @@ test_search_json() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --json
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1425,11 +1425,11 @@ test_search_sort_option() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
 
   # Default sort should be trendingScore.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma
-  if ! assert_contains "$(cat "${YALLAMA_TEST_LOG_DIR}/curl.log")" 'sort=trendingScore'; then
+  if ! assert_contains "$(cat "${FOLD_TEST_LOG_DIR}/curl.log")" 'sort=trendingScore'; then
     fail 'search default sort is trending' "expected sort=trendingScore in request URL"
     return
   fi
@@ -1437,7 +1437,7 @@ test_search_sort_option() {
 
   # --sort downloads should pass sort=downloads to the API.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --sort downloads
-  if ! assert_contains "$(cat "${YALLAMA_TEST_LOG_DIR}/curl.log")" 'sort=downloads'; then
+  if ! assert_contains "$(cat "${FOLD_TEST_LOG_DIR}/curl.log")" 'sort=downloads'; then
     fail 'search --sort downloads' "expected sort=downloads in request URL"
     return
   fi
@@ -1445,7 +1445,7 @@ test_search_sort_option() {
 
   # --sort newest should map to lastModified in the URL.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --sort newest
-  if ! assert_contains "$(cat "${YALLAMA_TEST_LOG_DIR}/curl.log")" 'sort=lastModified'; then
+  if ! assert_contains "$(cat "${FOLD_TEST_LOG_DIR}/curl.log")" 'sort=lastModified'; then
     fail 'search --sort newest maps to lastModified' "expected sort=lastModified in request URL"
     return
   fi
@@ -1464,7 +1464,7 @@ test_search_quants_tabular() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1507,7 +1507,7 @@ test_search_quants_quiet() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants --quiet
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1540,7 +1540,7 @@ test_search_quants_json() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants --json
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1569,7 +1569,7 @@ test_search_default_quant_json() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants --json
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1600,7 +1600,7 @@ test_search_default_quant_tabular() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$YALLAMA_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1629,7 +1629,7 @@ test_browse_opens_url() {
     return
   fi
 
-  local open_log="${YALLAMA_TEST_LOG_DIR}/open.log"
+  local open_log="${FOLD_TEST_LOG_DIR}/open.log"
   if ! assert_contains "$(cat "$open_log" 2>/dev/null)" 'https://huggingface.co/demo/test-model'; then
     fail 'browse opens correct URL' "expected HF URL in open log, got: $(cat "$open_log" 2>/dev/null)"
     return
@@ -1741,7 +1741,7 @@ test_profile_set_and_show() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- \
@@ -1757,7 +1757,7 @@ test_profile_set_and_show() {
     return
   fi
 
-  local profile_file="${YALLAMA_PROFILES_DIR}/coder"
+  local profile_file="${FOLD_PROFILES_DIR}/coder"
   if [[ ! -f "$profile_file" ]]; then
     fail 'profile set creates profile file' "expected profile file at $profile_file"
     return
@@ -1824,7 +1824,7 @@ test_remove_profile_via_top_level_remove() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder 'demo/model:Q4_K'
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1837,7 +1837,7 @@ test_remove_profile_via_top_level_remove() {
     fail 'remove/rm supports profile removal' "remove profile failed: $(cat "$stderr_file")"
     return
   fi
-  if [[ -f "${YALLAMA_PROFILES_DIR}/coder" ]]; then
+  if [[ -f "${FOLD_PROFILES_DIR}/coder" ]]; then
     fail 'remove/rm supports profile removal' 'expected profile file removed by top-level remove'
     return
   fi
@@ -1848,7 +1848,7 @@ test_remove_profile_via_top_level_remove() {
     fail 'remove/rm supports profile removal' "rm profile failed: $(cat "$stderr_file")"
     return
   fi
-  if [[ -f "${YALLAMA_PROFILES_DIR}/coder" ]]; then
+  if [[ -f "${FOLD_PROFILES_DIR}/coder" ]]; then
     fail 'remove/rm supports profile removal' 'expected profile file removed by top-level rm alias'
     return
   fi
@@ -1878,7 +1878,7 @@ test_profile_duplicate() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- --ctx-size 65536 -ngl 99
@@ -1889,12 +1889,12 @@ test_profile_duplicate() {
     return
   fi
 
-  if [[ ! -f "${YALLAMA_PROFILES_DIR}/coder-hi-ctx" ]]; then
+  if [[ ! -f "${FOLD_PROFILES_DIR}/coder-hi-ctx" ]]; then
     fail 'profile duplicate copies profile' "expected destination profile file to exist"
     return
   fi
 
-  if ! diff -q "${YALLAMA_PROFILES_DIR}/coder" "${YALLAMA_PROFILES_DIR}/coder-hi-ctx" >/dev/null 2>&1; then
+  if ! diff -q "${FOLD_PROFILES_DIR}/coder" "${FOLD_PROFILES_DIR}/coder-hi-ctx" >/dev/null 2>&1; then
     fail 'profile duplicate copies profile' "expected source and destination to have identical contents"
     return
   fi
@@ -1906,7 +1906,7 @@ test_profile_duplicate_dest_exists_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'
@@ -1931,7 +1931,7 @@ test_profile_invalid_name_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set 'bad name' 'demo/model'
   if [[ $RUN_STATUS -eq 0 ]]; then
@@ -1951,7 +1951,7 @@ test_profile_overwrite() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- --ctx-size 32768
@@ -1963,13 +1963,13 @@ test_profile_overwrite() {
     return
   fi
 
-  if ! assert_contains "$(cat "${YALLAMA_PROFILES_DIR}/coder")" '--ctx-size'; then
+  if ! assert_contains "$(cat "${FOLD_PROFILES_DIR}/coder")" '--ctx-size'; then
     fail 'profile set overwrites existing' "expected flags in overwritten profile"
     return
   fi
 
   # The old value 32768 should not appear; 65536 should.
-  if assert_contains "$(cat "${YALLAMA_PROFILES_DIR}/coder")" '32768'; then
+  if assert_contains "$(cat "${FOLD_PROFILES_DIR}/coder")" '32768'; then
     fail 'profile set overwrites existing' "expected old ctx-size 32768 to be gone after overwrite"
     return
   fi
@@ -1984,17 +1984,17 @@ test_run_with_profile() {
   local stderr_file="${TEST_DIR}/stderr"
   local run_args_log="${TEST_DIR}/run-args.log"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-  export YALLAMA_INSTALL_ROOT="$install_root"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export FOLD_INSTALL_ROOT="$install_root"
 
   mkdir -p "$current_link"
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$YALLAMA_RUN_ARGS_LOG"
+printf '%s\n' "$*" >"$FOLD_RUN_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
-  export YALLAMA_RUN_ARGS_LOG="$run_args_log"
+  export FOLD_RUN_ARGS_LOG="$run_args_log"
   unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
@@ -2035,17 +2035,17 @@ test_serve_with_profile() {
   local stderr_file="${TEST_DIR}/stderr"
   local serve_args_log="${TEST_DIR}/serve-args.log"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-  export YALLAMA_INSTALL_ROOT="$install_root"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export FOLD_INSTALL_ROOT="$install_root"
 
   mkdir -p "$current_link"
   cat >"${current_link}/llama-server" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$YALLAMA_SERVE_ARGS_LOG"
+printf '%s\n' "$*" >"$FOLD_SERVE_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-server"
-  export YALLAMA_SERVE_ARGS_LOG="$serve_args_log"
+  export FOLD_SERVE_ARGS_LOG="$serve_args_log"
   unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
@@ -2086,17 +2086,17 @@ test_serve_with_profile_and_extra_args() {
   local stderr_file="${TEST_DIR}/stderr"
   local serve_args_log="${TEST_DIR}/serve-args.log"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-  export YALLAMA_INSTALL_ROOT="$install_root"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export FOLD_INSTALL_ROOT="$install_root"
 
   mkdir -p "$current_link"
   cat >"${current_link}/llama-server" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$YALLAMA_SERVE_ARGS_LOG"
+printf '%s\n' "$*" >"$FOLD_SERVE_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-server"
-  export YALLAMA_SERVE_ARGS_LOG="$serve_args_log"
+  export FOLD_SERVE_ARGS_LOG="$serve_args_log"
   unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
@@ -2131,8 +2131,8 @@ test_run_missing_profile_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles-empty"
-  export YALLAMA_INSTALL_ROOT="$install_root"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles-empty"
+  export FOLD_INSTALL_ROOT="$install_root"
   mkdir -p "$current_link"
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
@@ -2162,31 +2162,31 @@ test_profile_command_sections() {
   local run_args_log="${TEST_DIR}/run-args.log"
   local serve_args_log="${TEST_DIR}/serve-args.log"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-  export YALLAMA_INSTALL_ROOT="$install_root"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export FOLD_INSTALL_ROOT="$install_root"
   unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
 
   mkdir -p "$current_link"
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$YALLAMA_RUN_ARGS_LOG"
+printf '%s\n' "$*" >"$FOLD_RUN_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
 
   cat >"${current_link}/llama-server" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$YALLAMA_SERVE_ARGS_LOG"
+printf '%s\n' "$*" >"$FOLD_SERVE_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-server"
 
-  export YALLAMA_RUN_ARGS_LOG="$run_args_log"
-  export YALLAMA_SERVE_ARGS_LOG="$serve_args_log"
+  export FOLD_RUN_ARGS_LOG="$run_args_log"
+  export FOLD_SERVE_ARGS_LOG="$serve_args_log"
 
   # Write a profile with common flags and per-command sections.
-  mkdir -p "$YALLAMA_PROFILES_DIR"
-  cat >"${YALLAMA_PROFILES_DIR}/coder" <<'PROFILE'
+  mkdir -p "$FOLD_PROFILES_DIR"
+  cat >"${FOLD_PROFILES_DIR}/coder" <<'PROFILE'
 model=demo/model:Q4_K
 --temp 0.2
 -ngl 99
@@ -2258,8 +2258,8 @@ test_profile_set_builtin_with_model() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-  unset YALLAMA_TEMPLATES_DIR
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  unset FOLD_TEMPLATES_DIR
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mycoder code user/qwen2.5:Q4_K
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2299,8 +2299,8 @@ test_profile_set_builtin_no_model_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-  unset YALLAMA_TEMPLATES_DIR
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  unset FOLD_TEMPLATES_DIR
 
   # 'code' built-in has no model= line; no model arg provided → should error.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mycoder code
@@ -2320,8 +2320,8 @@ test_profile_set_user_template() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
 
   # Create a user-defined template with a default model.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytemplate user/mymodel:Q4_K -- --temp 0.5 --ctx-size 4096
@@ -2356,8 +2356,8 @@ test_profile_set_template_overwrites_existing() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_PROFILES_DIR="${HOME}/.config/yallama/profiles"
-  unset YALLAMA_TEMPLATES_DIR
+  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  unset FOLD_TEMPLATES_DIR
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mypro user/original:Q4_K -- --temp 0.9
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2417,7 +2417,7 @@ test_template_show_builtin() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  unset YALLAMA_TEMPLATES_DIR
+  unset FOLD_TEMPLATES_DIR
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template show code
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2443,7 +2443,7 @@ test_template_set_and_show() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mywork user/work-model -- --temp 0.3 --ctx-size 8192
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2479,7 +2479,7 @@ test_template_remove() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytmp -- --temp 0.5
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2511,7 +2511,7 @@ test_template_remove_builtin_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  unset YALLAMA_TEMPLATES_DIR
+  unset FOLD_TEMPLATES_DIR
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template remove chat
   if [[ $RUN_STATUS -eq 0 ]]; then
@@ -2530,11 +2530,11 @@ test_template_user_overrides_builtin() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export YALLAMA_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
 
   # Write a user template named 'code' that overrides the built-in.
-  mkdir -p "$YALLAMA_TEMPLATES_DIR"
-  cat >"${YALLAMA_TEMPLATES_DIR}/code" <<'EOF'
+  mkdir -p "$FOLD_TEMPLATES_DIR"
+  cat >"${FOLD_TEMPLATES_DIR}/code" <<'EOF'
 --temp 0.9
 --ctx-size 1024
 EOF

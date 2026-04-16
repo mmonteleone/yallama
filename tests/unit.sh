@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Unit tests for pure helper functions (yallama-cache.sh, yallama-helpers.sh).
-# These tests exercise functions directly without running yallama as a subprocess.
+# Unit tests for pure helper functions (fold-cache.sh, fold-helpers.sh).
+# These tests exercise functions directly without running fold as a subprocess.
 
 # shellcheck source=tests/test-helpers.sh
 source "$(dirname "${BASH_SOURCE[0]}")/test-helpers.sh"
@@ -9,7 +9,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/test-helpers.sh"
 HOME="$(mktemp -d "${TEST_ROOT}/home.XXXXXX")"
 HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
 
-source_yallama_libs
+source_fold_libs
 
 # ── _parse_model_spec ─────────────────────────────────────────────────────────
 
