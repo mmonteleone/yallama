@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# yallama: Ollama-shaped llama.cpp and model management helper
-# https://github.com/mmonteleone/yallama
+# fold: Ollama-shaped llama.cpp and model management helper
+# https://github.com/mmonteleone/fold
 
 # MIT License
 
@@ -41,9 +41,9 @@ SCRIPT_NAME="$(basename "$0")"
 # shellcheck disable=SC2034
 DEFAULT_INSTALL_ROOT="${HOME}/.llama.cpp"
 # shellcheck disable=SC2034
-DEFAULT_PROFILES_DIR="${HOME}/.config/yallama/profiles"
+DEFAULT_PROFILES_DIR="${HOME}/.config/fold/profiles"
 # shellcheck disable=SC2034
-DEFAULT_TEMPLATES_DIR="${HOME}/.config/yallama/templates"
+DEFAULT_TEMPLATES_DIR="${HOME}/.config/fold/templates"
 # shellcheck disable=SC2034
 HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
 # In-process cache for the shell profile edit permission decision.
@@ -51,26 +51,26 @@ HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
 # prompting the user more than once within a single invocation.
 # shellcheck disable=SC2034
 SHELL_PROFILE_EDIT_DECISION=""
-# @VERSION@ is replaced with the git tag by tools/build-standalone.sh at build time.
+# @VERSION@ is replaced with the git tag by tools/build.sh at build time.
 # When running directly from source (dev mode), this placeholder is preserved.
-YALLAMA_VERSION="@VERSION@"
+FOLD_VERSION="@VERSION@"
 
 # Source all library modules. When building a standalone script,
-# tools/build-standalone.sh replaces the region between the BEGIN/END markers
+# tools/build.sh replaces the region between the BEGIN/END markers
 # with the inlined content of each file.
 # BEGIN_GENERATED_MODULES
-# shellcheck source=src/lib/yallama-helpers.sh
-source "${SCRIPT_DIR}/lib/yallama-helpers.sh"
-# shellcheck source=src/lib/yallama-cache.sh
-source "${SCRIPT_DIR}/lib/yallama-cache.sh"
-# shellcheck source=src/lib/yallama-profiles.sh
-source "${SCRIPT_DIR}/lib/yallama-profiles.sh"
-# shellcheck source=src/lib/yallama-runtime.sh
-source "${SCRIPT_DIR}/lib/yallama-runtime.sh"
-# shellcheck source=src/lib/yallama-search.sh
-source "${SCRIPT_DIR}/lib/yallama-search.sh"
-# shellcheck source=src/lib/yallama-completions.sh
-source "${SCRIPT_DIR}/lib/yallama-completions.sh"
+# shellcheck source=src/lib/fold-helpers.sh
+source "${SCRIPT_DIR}/lib/fold-helpers.sh"
+# shellcheck source=src/lib/fold-cache.sh
+source "${SCRIPT_DIR}/lib/fold-cache.sh"
+# shellcheck source=src/lib/fold-profiles.sh
+source "${SCRIPT_DIR}/lib/fold-profiles.sh"
+# shellcheck source=src/lib/fold-runtime.sh
+source "${SCRIPT_DIR}/lib/fold-runtime.sh"
+# shellcheck source=src/lib/fold-search.sh
+source "${SCRIPT_DIR}/lib/fold-search.sh"
+# shellcheck source=src/lib/fold-completions.sh
+source "${SCRIPT_DIR}/lib/fold-completions.sh"
 # END_GENERATED_MODULES
 
 # ── help ──────────────────────────────────────────────────────────────────────
@@ -96,14 +96,14 @@ Commands:
   ps                   Show running llama-cli / llama-server processes
   profile              Manage named run/serve profiles
   template             Manage templates
-  version (--version)  Show yallama version
+  version (--version)  Show fold version
   help (h, ?)          Show this help
 
 Environment:
-  YALLAMA_INSTALL_ROOT   Override the default installation root (~/.llama.cpp).
+  FOLD_INSTALL_ROOT   Override the default installation root (~/.llama.cpp).
                          Applies to: run, serve, pull.
-  YALLAMA_PROFILES_DIR   Override the default profiles directory (~/.config/yallama/profiles).
-  YALLAMA_TEMPLATES_DIR  Override the default user templates directory (~/.config/yallama/templates).
+  FOLD_PROFILES_DIR   Override the default profiles directory (~/.config/fold/profiles).
+  FOLD_TEMPLATES_DIR  Override the default user templates directory (~/.config/fold/templates).
   HF_TOKEN               HuggingFace access token for private or gated models.
                          Also checked: HF_HUB_TOKEN, HUGGING_FACE_HUB_TOKEN.
 
@@ -120,7 +120,7 @@ shift || true
 
 case "$COMMAND" in
   help|h|\?)   cmd_help ;;
-  version|--version|-v) printf '%s %s\n' "$SCRIPT_NAME" "$YALLAMA_VERSION" ;;
+  version|--version|-v) printf '%s %s\n' "$SCRIPT_NAME" "$FOLD_VERSION" ;;
   install)     cmd_install "$@" ;;
   update)      cmd_update "$@" ;;
   uninstall)   cmd_uninstall "$@" ;;

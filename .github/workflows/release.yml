@@ -24,10 +24,10 @@ jobs:
 
       - name: Build standalone script
         shell: bash
-        run: bash tools/build-standalone.sh
+        run: bash tools/build.sh
 
       - name: Publish release asset
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: dist/yallama
+          files: dist/fold

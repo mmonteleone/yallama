@@ -1,8 +1,8 @@
-# Yallama
+# Fold 🦙
 
 Run local models with the ease of [Ollama](https://ollama.com) and the power of official [llama.cpp](https://github.com/ggml-org/llama.cpp) releases with full [Hugging Face GGUF](https://huggingface.co/models?library=gguf&sort=trending) model access.
 
-Yallama is a single Bash script. It installs official llama.cpp releases, uses the standard Hugging Face cache, and provides an Ollama-style CLI for running and managing local models: *search*, *pull*, *run*, *serve*, *list*, *remove*, *update*, etc. along with templated usage profiles.
+Fold is just a shell script. It installs official llama.cpp releases, uses the standard Hugging Face cache, and provides an Ollama-style CLI for running and managing local models: *search*, *pull*, *run*, *serve*, *list*, *remove*, *update*, etc. along with templated usage profile helpers.
 
 ## Why use it?
 
@@ -11,8 +11,8 @@ Yallama is a single Bash script. It installs official llama.cpp releases, uses t
 - The full Hugging Face model registry, not just what Ollama ships
 - Built-in chat UI and OpenAI-compatible API endpoint via `llama-server`
 - Model search and discovery against Hugging Face from the command line
-- Command, model, and quant shell completions for fish, zsh, and bash
-- Saved profiles for pinning a model with a specific set of flags
+- Saved, templated, profiles for pinning a model with a specific set of flags
+- Command, model, profile, and quant shell completions for fish, zsh, and bash
 - Standard HF cache — downloaded models are visible to other tools
 
 ## Does the world really need this?
@@ -24,57 +24,57 @@ Not really.
 Download the script system-wide:
 
 ```sh
-sudo curl -fsSL https://github.com/mmonteleone/yallama/releases/latest/download/yallama -o /usr/local/bin/yallama && sudo chmod +x /usr/local/bin/yallama
+sudo curl -fsSL https://github.com/mmonteleone/fold/releases/latest/download/fold -o /usr/local/bin/fold && sudo chmod +x /usr/local/bin/fold
 ```
 
 Or user-local (no `sudo`):
 
 ```sh
-curl -fsSL https://github.com/mmonteleone/yallama/releases/latest/download/yallama -o ~/.local/bin/yallama && chmod +x ~/.local/bin/yallama
+curl -fsSL https://github.com/mmonteleone/fold/releases/latest/download/fold -o ~/.local/bin/fold && chmod +x ~/.local/bin/fold
 ```
 
 > [!NOTE]
-> `~/.local/bin` may not be in your `$PATH` by default on macOS. If `yallama` isn't found after installing, add it: `export PATH="$HOME/.local/bin:$PATH"` in your shell profile.
+> `~/.local/bin` may not be in your `$PATH` by default on macOS. If `fold` isn't found after installing, add it: `export PATH="$HOME/.local/bin:$PATH"` in your shell profile.
 
 Then install llama.cpp and set up shell completions:
 
 ```sh
-yallama install
+fold install
 ```
 
-`yallama install` downloads the latest llama.cpp release and — after prompting — adds it to your `$PATH` and installs shell completions for your current shell. Pass `--shell-profile` to skip the prompt and allow edits automatically, or `--no-shell-profile` to skip profile edits entirely.
+`fold install` downloads the latest llama.cpp release and — after prompting — adds it to your `$PATH` and installs shell completions for your current shell. Pass `--shell-profile` to skip the prompt and allow edits automatically, or `--no-shell-profile` to skip profile edits entirely.
 
 ## Quick start
 
 ```sh
 # Find a model
-yallama search gemma
+fold search gemma
 
 # Chat with a model (downloads on first use)
-yallama run unsloth/gemma-4-26B-A4B-it-GGUF
+fold run unsloth/gemma-4-26B-A4B-it-GGUF
 
 # Serve as an OpenAI-compatible API + web UI at http://localhost:8080
-yallama serve unsloth/gemma-4-26B-A4B-it-GGUF
+fold serve unsloth/gemma-4-26B-A4B-it-GGUF
 
 # Pass extra llama.cpp flags after '--'
-yallama run unsloth/gemma-4-26B-A4B-it-GGUF -- -ngl 999 -c 8192
+fold run unsloth/gemma-4-26B-A4B-it-GGUF -- -ngl 999 -c 8192
 
 # Save a profile — name + model + flags
-yallama profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
+fold profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
   --ctx-size 65536 --temp 0.2 -ngl 999
 
 # Use it anywhere you'd use a model name
-yallama run coder
+fold run coder
 
 # Or create one from a built-in template
-yallama profile set mycoder code unsloth/Qwen3.5-27B-GGUF
+fold profile set mycoder code unsloth/Qwen3.5-27B-GGUF
 
 # List everything: models, profiles, templates
-yallama list
+fold list
 
 # Remove a model or profile
-yallama remove unsloth/gemma-4-26B-A4B-it-GGUF
-yallama remove coder
+fold remove unsloth/gemma-4-26B-A4B-it-GGUF
+fold remove coder
 ```
 
 ## Commands
@@ -101,27 +101,27 @@ yallama remove coder
 | `prune` | Remove old versions, keep current |
 | `uninstall` | Remove the llama.cpp install |
 | `ps` | Show running models |
-| `version` | Show the yallama version |
+| `version` | Show the fold version |
 
-Run `yallama <command> --help` for per-command flags and usage.
+Run `fold <command> --help` for per-command flags and usage.
 
 ## Shell completions
 
-Completions for commands, model names, quant variants, and profile names are available for fish, zsh, and bash. They are installed automatically when `yallama install` edits your shell profile. If you skipped shell profile edits during `yallama install`, re-run it with `--shell-profile` to enable them:
+Completions for commands, model names, quant variants, and profile names are available for fish, zsh, and bash. They are installed automatically when `fold install` edits your shell profile. If you skipped shell profile edits during `fold install`, re-run it with `--shell-profile` to enable them:
 
 ```sh
-yallama install --shell-profile
+fold install --shell-profile
 ```
 
 ## Model search
 
 ```sh
-yallama search gemma                        # keyword search, sorted by trending
-yallama search qwen --quants                # show available quant variants
-yallama search llama --sort downloads --limit 10
-yallama search mistral --json               # machine-readable
-yallama search mistral --quiet              # one model ID per line
-yallama browse unsloth/gemma-4-26B-A4B-it-GGUF        # open in browser
+fold search gemma                        # keyword search, sorted by trending
+fold search qwen --quants                # show available quant variants
+fold search llama --sort downloads --limit 10
+fold search mistral --json               # machine-readable
+fold search mistral --quiet              # one model ID per line
+fold browse unsloth/gemma-4-26B-A4B-it-GGUF        # open in browser
 ```
 
 ## Models and quants
@@ -129,20 +129,20 @@ yallama browse unsloth/gemma-4-26B-A4B-it-GGUF        # open in browser
 Use the standard Hugging Face `USER/MODEL` format, optionally with `:QUANT`:
 
 ```sh
-yallama run unsloth/gemma-4-26B-A4B-it-GGUF            # default quant
-yallama run unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K    # specific quant
+fold run unsloth/gemma-4-26B-A4B-it-GGUF            # default quant
+fold run unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K    # specific quant
 ```
 
-`yallama list` shows downloaded models, profiles, and templates in separate sections. Scope the output with `--models`, `--profiles`, or `--templates`:
+`fold list` shows downloaded models, profiles, and templates in separate sections. Scope the output with `--models`, `--profiles`, or `--templates`:
 
 ```sh
-yallama list                   # all sections
-yallama ls --quiet             # machine-friendly, one entry per line
-yallama ls --json              # JSON array with a "kind" field
-yallama ls --models            # only downloaded models
+fold list                   # all sections
+fold ls --quiet             # machine-friendly, one entry per line
+fold ls --json              # JSON array with a "kind" field
+fold ls --models            # only downloaded models
 ```
 
-`yallama remove USER/MODEL:QUANT` removes a single quant variant; omit `:QUANT` to remove the whole model. `yallama remove PROFILE_NAME` removes a profile.
+`fold remove USER/MODEL:QUANT` removes a single quant variant; omit `:QUANT` to remove the whole model. `fold remove PROFILE_NAME` removes a profile.
 
 Models are stored in the standard Hugging Face cache (`~/.cache/huggingface/hub/`).
 
@@ -152,16 +152,16 @@ A **profile** is a named model + flags combination you can use anywhere a model 
 
 ```sh
 # Create a profile from a model spec and flags
-yallama profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
+fold profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
   --ctx-size 65536 --temp 0.2 -ngl 999
 
 # Use it with run or serve
-yallama run coder
-yallama serve coder
-yallama run coder -- --temp 0.5   # extra flags override profile flags
+fold run coder
+fold serve coder
+fold run coder -- --temp 0.5   # extra flags override profile flags
 ```
 
-A **template** is a reusable set of flags that can seed profiles. Yallama ships two built-in templates:
+A **template** is a reusable set of flags that can seed profiles. Fold ships two built-in templates:
 
 | Template | Use case | Key flags |
 |---|---|---|
@@ -171,37 +171,37 @@ A **template** is a reusable set of flags that can seed profiles. Yallama ships 
 Create a profile from a template:
 
 ```sh
-yallama profile set mycoder code unsloth/Qwen3.5-27B-GGUF
-yallama run mycoder
+fold profile set mycoder code unsloth/Qwen3.5-27B-GGUF
+fold run mycoder
 ```
 
 Create your own templates with `template set`. If a template includes a `model=` line, the model argument is optional when creating profiles from it:
 
 ```sh
 # Create a team template with a pinned model
-yallama template set work-chat user/our-llm:Q4_K -- --temp 0.6 --ctx-size 16384
+fold template set work-chat user/our-llm:Q4_K -- --temp 0.6 --ctx-size 16384
 
 # Create profiles from it — model comes from the template
-yallama profile set alice-chat work-chat
-yallama profile set bob-chat work-chat
+fold profile set alice-chat work-chat
+fold profile set bob-chat work-chat
 
 # Override the model for one profile
-yallama profile set test-chat work-chat user/new-llm:Q4_K
+fold profile set test-chat work-chat user/new-llm:Q4_K
 ```
 
 Other profile and template commands:
 
 ```sh
-yallama profile show coder          # print a profile's contents
-yallama profile duplicate coder coder2
-yallama template show code          # print a template's contents
-yallama template remove work-chat   # delete a user-defined template
-yallama remove coder                # delete a profile
+fold profile show coder          # print a profile's contents
+fold profile duplicate coder coder2
+fold template show code          # print a template's contents
+fold template remove work-chat   # delete a user-defined template
+fold remove coder                # delete a profile
 ```
 
 ### Profile file format
 
-Profiles are plain text files in `~/.config/yallama/profiles/`. Each has a `model=` line followed by flags, one per line:
+Profiles are plain text files in `~/.config/fold/profiles/`. Each has a `model=` line followed by flags, one per line:
 
 ```
 model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
@@ -224,30 +224,30 @@ model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
 
 Section headers are added by editing the file directly; `profile set` creates flat (no-section) profiles.
 
-Templates use the same format (`model=` is optional) and are stored in `~/.config/yallama/templates/`. Built-in templates cannot be removed, but a user-defined template with the same name takes precedence.
+Templates use the same format (`model=` is optional) and are stored in `~/.config/fold/templates/`. Built-in templates cannot be removed, but a user-defined template with the same name takes precedence.
 
 ## Configuration
 
 Environmental variables:
 
-- `YALLAMA_INSTALL_ROOT`: overrides the directory where llama.cpp is installed. Used by `run`, `serve`, and `pull` to locate binaries.
-- `YALLAMA_PROFILES_DIR`: overrides the directory where profiles are stored. Defaults to `~/.config/yallama/profiles`.
-- `YALLAMA_TEMPLATES_DIR`: overrides the directory where user-defined templates are stored. Defaults to `~/.config/yallama/templates`.
+- `FOLD_INSTALL_ROOT`: overrides the directory where llama.cpp is installed. Used by `run`, `serve`, and `pull` to locate binaries.
+- `FOLD_PROFILES_DIR`: overrides the directory where profiles are stored. Defaults to `~/.config/fold/profiles`.
+- `FOLD_TEMPLATES_DIR`: overrides the directory where user-defined templates are stored. Defaults to `~/.config/fold/templates`.
 - `HF_TOKEN`: is passed through for private or gated Hugging Face models. `HF_HUB_TOKEN` and `HUGGING_FACE_HUB_TOKEN` also work.
 
 
 ## Uninstall
 
-Remove llama.cpp and the yallama script itself:
+Remove llama.cpp and the fold script itself:
 
 ```sh
-yallama uninstall --self
+fold uninstall --self
 ```
 
 To also wipe all downloaded models from the Hugging Face cache:
 
 ```sh
-yallama uninstall --self --delete-hf-cache
+fold uninstall --self --delete-hf-cache
 ```
 
 Both steps prompt for confirmation. Add `--force` to skip prompts.
@@ -262,18 +262,18 @@ Both steps prompt for confirmation. Add `--force` to skip prompts.
 
 ## Development
 
-[src/yallama.sh](src/yallama.sh) is the modular source entrypoint. The domain modules live under [src/lib/](src/lib/). Standalone release artifacts are built from these sources by `tools/build-standalone.sh`, which inlines all modules and stamps in the version from the current git tag.
+[src/fold.sh](src/fold.sh) is the modular source entrypoint. The domain modules live under [src/lib/](src/lib/). Standalone release artifacts are built from these sources by `tools/build.sh`, which inlines all modules and stamps in the version from the current git tag.
 
 Generate a standalone release artifact locally with:
 
 ```sh
-bash tools/build-standalone.sh
+bash tools/build.sh
 ```
 
 ## Validation
 
 ```sh
-shellcheck src/yallama.sh src/lib/*.sh
+shellcheck src/fold.sh src/lib/*.sh
 bash tests/unit.sh
 bash tests/smoke.sh
 ```
@@ -284,4 +284,4 @@ MIT License
 
 Copyright (c) 2026 Michael Monteleone
 
-Yallama is an independent project and is not affiliated with or associated with [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp), or [Hugging Face](https://huggingface.co).
+Fold is an independent project and is not affiliated with or associated with [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp), or [Hugging Face](https://huggingface.co).

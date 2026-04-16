@@ -1,4 +1,4 @@
-# Runtime lifecycle helpers for yallama.
+# Runtime lifecycle helpers for fold.
 # shellcheck shell=bash
 
 # macOS Gatekeeper places a quarantine extended attribute on files downloaded
@@ -84,8 +84,8 @@ install_path() {
   local parent_shell
   parent_shell="$(basename "${SHELL:-bash}")"
 
-  local begin_marker="# BEGIN yallama"
-  local end_marker="# END yallama"
+  local begin_marker="# BEGIN fold"
+  local end_marker="# END fold"
   # The BEGIN/END sentinel lines make the PATH addition idempotent:
   # re-running install will not append a duplicate entry to the shell profile.
 
@@ -155,7 +155,7 @@ Options:
   --path <dir>          Installation root. Defaults to ~/.llama.cpp.
   --arch <arch>         Asset architecture suffix (e.g. macos-arm64, macos-x86_64,
                         ubuntu-x64, ubuntu-arm64). Auto-detected if omitted.
-  --shell-profile       Allow yallama to edit your shell profile for PATH/completion loading.
+  --shell-profile       Allow fold to edit your shell profile for PATH/completion loading.
   --no-shell-profile    Never edit your shell profile. Default: ask if interactive, skip otherwise.
   --print-latest-tag    Print the latest release tag and exit.
 EOF
@@ -331,7 +331,7 @@ install_completions() {
       local loader='for f in ~/.bash_completion.d/*; do [[ -f "$f" ]] && source "$f"; done'
       if [[ -f "${HOME}/.bashrc" ]] && ! grep -qF 'bash_completion.d' "${HOME}/.bashrc"; then
         if shell_profile_edits_allowed "$profile_mode"; then
-          printf '\n# yallama shell completions\n%s\n' "$loader" >> "${HOME}/.bashrc"
+          printf '\n# fold shell completions\n%s\n' "$loader" >> "${HOME}/.bashrc"
         else
           echo "Bash completions installed -> $dest"
           echo "Source them manually from ${HOME}/.bashrc if you want shell completion support."
@@ -400,7 +400,7 @@ Usage: $SCRIPT_NAME update [--path <installation_root>] [--arch <arch>]
 Options:
   --path <dir>    Installation root. Defaults to ~/.llama.cpp.
   --arch <arch>   Asset architecture suffix. Auto-detected if omitted.
-  --shell-profile Allow yallama to edit your shell profile for PATH/completion loading.
+  --shell-profile Allow fold to edit your shell profile for PATH/completion loading.
   --no-shell-profile
                   Never edit your shell profile. Default: ask if interactive, skip otherwise.
 
@@ -526,7 +526,7 @@ Usage: $SCRIPT_NAME uninstall [--path <installation_root>] [--delete-hf-cache] [
 Options:
   --path <dir>          Installation root. Defaults to ~/.llama.cpp.
   --delete-hf-cache    Also delete cached model directories under ~/.cache/huggingface/hub.
-  --self               Also delete the yallama script itself.
+  --self               Also delete the fold script itself.
   --force              Skip confirmation prompts.
 EOF
 }

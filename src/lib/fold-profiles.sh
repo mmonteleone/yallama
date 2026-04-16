@@ -1,11 +1,11 @@
-# Profile and template helpers for yallama.
+# Profile and template helpers for fold.
 # shellcheck shell=bash
 
 # Return the resolved profiles directory (env override or default).
-# ${YALLAMA_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}: use the env var if set,
+# ${FOLD_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}: use the env var if set,
 # otherwise fall back to the default. This pattern is used for all overridable dirs.
 _profiles_dir() {
-  local dir="${YALLAMA_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}"
+  local dir="${FOLD_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}"
   # ${dir/#\~/$HOME}: expand leading tilde (see ensure_llama_in_path).
   dir="${dir/#\~/$HOME}"
   printf '%s' "$dir"
@@ -19,7 +19,7 @@ _profile_path() {
 
 # Return the resolved templates directory (env override or default).
 _templates_dir() {
-  local dir="${YALLAMA_TEMPLATES_DIR:-$DEFAULT_TEMPLATES_DIR}"
+  local dir="${FOLD_TEMPLATES_DIR:-$DEFAULT_TEMPLATES_DIR}"
   dir="${dir/#\~/$HOME}"
   printf '%s' "$dir"
 }
@@ -205,7 +205,7 @@ Subcommands:
   duplicate <SOURCE> <DEST>
       Copy an existing profile to a new name.
 
-Profiles are stored in: \${YALLAMA_PROFILES_DIR:-~/.config/yallama/profiles}
+Profiles are stored in: \${FOLD_PROFILES_DIR:-~/.config/fold/profiles}
 Built-in templates available for 'profile set': chat, code
 
 Optional [run] and [serve] section headers in a profile file scope flags to
@@ -268,7 +268,7 @@ Subcommands:
   remove <TEMPLATE>
       Delete a user-defined template. Built-in templates cannot be removed.
 
-Templates are stored in: \${YALLAMA_TEMPLATES_DIR:-~/.config/yallama/templates}
+Templates are stored in: \${FOLD_TEMPLATES_DIR:-~/.config/fold/templates}
 Built-in templates: chat, code
 EOF
 }

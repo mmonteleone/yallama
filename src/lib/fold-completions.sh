@@ -1,11 +1,11 @@
-# Shell completion generators for yallama.
+# Shell completion generators for fold.
 # shellcheck shell=bash
 # shellcheck disable=SC2154
 # Each _completions_<shell>() function emits a heredoc of shell-native
 # completion code; the output is written to the appropriate completions
-# directory by install_completions() in yallama-runtime.sh.
+# directory by install_completions() in fold-runtime.sh.
 
-# Generate Fish shell completions for yallama.
+# Generate Fish shell completions for fold.
 # Fish uses the __fish_seen_subcommand_from helper to scope completions
 # to specific subcommands, with -n conditions as guards.
 _completions_fish() {
@@ -48,7 +48,7 @@ complete -c $sn -n "__fish_seen_subcommand_from status"      -l check-update    
 complete -c $sn -n "__fish_seen_subcommand_from install update" -l shell-profile   -d 'Allow shell profile edits'
 complete -c $sn -n "__fish_seen_subcommand_from install update" -l no-shell-profile -d 'Skip shell profile edits'
 complete -c $sn -n "__fish_seen_subcommand_from uninstall"   -l delete-hf-cache  -d 'Delete cached HF model dirs'
-complete -c $sn -n "__fish_seen_subcommand_from uninstall"   -l self             -d 'Also delete the yallama script itself'
+complete -c $sn -n "__fish_seen_subcommand_from uninstall"   -l self             -d 'Also delete the fold script itself'
 complete -c $sn -n "__fish_seen_subcommand_from uninstall remove rm prune" -l force    -d 'Skip confirmation prompt'
 complete -c $sn -n "__fish_seen_subcommand_from list ls"     -l quiet            -d 'Only print names'
 complete -c $sn -n "__fish_seen_subcommand_from list ls"     -l json             -d 'JSON output'
@@ -61,16 +61,16 @@ complete -c $sn -n "__fish_seen_subcommand_from search"      -l quants          
 complete -c $sn -n "__fish_seen_subcommand_from search"      -l quiet            -d 'Only print model identifiers'
 complete -c $sn -n "__fish_seen_subcommand_from search"      -l json             -d 'JSON output'
 complete -c $sn -n "__fish_seen_subcommand_from browse"      -l print            -d 'Print URL instead of opening browser'
-complete -c $sn -n "__fish_seen_subcommand_from browse pull" -a "(__yallama_cached_models)"
-complete -c $sn -n "__fish_seen_subcommand_from run serve"   -a "(__yallama_cached_models) (__yallama_profiles)"
-complete -c $sn -n "__fish_seen_subcommand_from remove rm"   -a "(__yallama_removal_targets)"
+complete -c $sn -n "__fish_seen_subcommand_from browse pull" -a "(__fold_cached_models)"
+complete -c $sn -n "__fish_seen_subcommand_from run serve"   -a "(__fold_cached_models) (__fold_profiles)"
+complete -c $sn -n "__fish_seen_subcommand_from remove rm"   -a "(__fold_removal_targets)"
 
 # Profile subcommand completions.
 set -l profile_subcmds set show duplicate
 complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a set       -d 'Create or replace a profile'
 complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a show      -d 'Print a profile'
 complete -c $sn -n "__fish_seen_subcommand_from profile; and not __fish_seen_subcommand_from \$profile_subcmds" -a duplicate -d 'Copy a profile to a new name'
-complete -c $sn -n "__fish_seen_subcommand_from profile; and __fish_seen_subcommand_from show duplicate" -a "(__yallama_profiles)"
+complete -c $sn -n "__fish_seen_subcommand_from profile; and __fish_seen_subcommand_from show duplicate" -a "(__fold_profiles)"
 
 # Template subcommand completions.
 set -l template_subcmds show set remove rm
@@ -78,61 +78,61 @@ complete -c $sn -n "__fish_seen_subcommand_from template; and not __fish_seen_su
 complete -c $sn -n "__fish_seen_subcommand_from template; and not __fish_seen_subcommand_from \$template_subcmds" -a set    -d 'Create or replace a user-defined template'
 complete -c $sn -n "__fish_seen_subcommand_from template; and not __fish_seen_subcommand_from \$template_subcmds" -a remove -d 'Delete a user-defined template'
 complete -c $sn -n "__fish_seen_subcommand_from template; and not __fish_seen_subcommand_from \$template_subcmds" -a rm     -d 'Delete a user-defined template (alias)'
-complete -c $sn -n "__fish_seen_subcommand_from template; and __fish_seen_subcommand_from show remove rm" -a "(__yallama_templates)"
+complete -c $sn -n "__fish_seen_subcommand_from template; and __fish_seen_subcommand_from show remove rm" -a "(__fold_templates)"
 
 # Model name completion for commands that take MODEL_NAME[:QUANT].
-function __yallama_cached_models
-  yallama ls --quiet --models 2>/dev/null | awk 'index(\$0, "/") > 0 { print \$0 }'
+function __fold_cached_models
+  fold ls --quiet --models 2>/dev/null | awk 'index(\$0, "/") > 0 { print \$0 }'
 end
 
-function __yallama_profiles
-  yallama ls --quiet --profiles 2>/dev/null
+function __fold_profiles
+  fold ls --quiet --profiles 2>/dev/null
 end
 
-function __yallama_templates
-  yallama ls --quiet --templates 2>/dev/null
+function __fold_templates
+  fold ls --quiet --templates 2>/dev/null
 end
 
-function __yallama_removal_targets
-  __yallama_cached_models
-  __yallama_profiles
+function __fold_removal_targets
+  __fold_cached_models
+  __fold_profiles
 end
 EOF
 }
 
-# Generate Zsh completions for yallama.
+# Generate Zsh completions for fold.
 # Uses Zsh's _arguments state-machine approach with a nested case for profile
 # subcommands. The heredoc uses a quoted delimiter ('ZSHEOF') so that bash
 # does not expand the $, (), and other Zsh-specific syntax inside the body.
 _completions_zsh() {
   local sn="$SCRIPT_NAME"
   cat <<'ZSHEOF'
-#compdef yallama
-# Zsh completions for yallama  (generated by: yallama install)
+#compdef fold
+# Zsh completions for fold  (generated by: fold install)
 
-_yallama_cached_models() {
+_fold_cached_models() {
   local specs
-  specs=(${(f)"$(yallama ls --quiet --models 2>/dev/null | awk 'index($0, "/") > 0 { print $0 }')"})
+  specs=(${(f)"$(fold ls --quiet --models 2>/dev/null | awk 'index($0, "/") > 0 { print $0 }')"})
   (( ${#specs[@]} )) && _values 'model[:quant]' "${specs[@]}"
 }
 
-_yallama_profiles() {
+_fold_profiles() {
   local names
-  names=(${(f)"$(yallama ls --quiet --profiles 2>/dev/null)"})
+  names=(${(f)"$(fold ls --quiet --profiles 2>/dev/null)"})
   (( ${#names[@]} )) && _values 'profile' "${names[@]}"
 }
 
-_yallama_templates() {
+_fold_templates() {
   local names
-  names=(${(f)"$(yallama ls --quiet --templates 2>/dev/null)"})
+  names=(${(f)"$(fold ls --quiet --templates 2>/dev/null)"})
   (( ${#names[@]} )) && _values 'template' "${names[@]}"
 }
 
-_yallama_removal_targets() {
-  _alternative 'models:model:_yallama_cached_models' 'profiles:profile:_yallama_profiles'
+_fold_removal_targets() {
+  _alternative 'models:model:_fold_cached_models' 'profiles:profile:_fold_profiles'
 }
 
-_yallama() {
+_fold() {
   local state
   _arguments \
     '1:command:->cmd' \
@@ -179,7 +179,7 @@ _yallama() {
           _arguments \
             '--path[Installation root]:dir:_files -/' \
             '--delete-hf-cache[Delete cached HF model dirs]' \
-            '--self[Also delete the yallama script itself]' \
+            '--self[Also delete the fold script itself]' \
             '--force[Skip confirmation prompt]' ;;
         status)
           _arguments \
@@ -193,15 +193,15 @@ _yallama() {
             '--quiet[Only print model identifiers]' \
             '--json[JSON output]' ;;
         browse)
-          _arguments '--print[Print URL instead of opening browser]' && _yallama_cached_models ;;
+          _arguments '--print[Print URL instead of opening browser]' && _fold_cached_models ;;
         list|ls)
           _arguments '--quiet[Only print names]' '--json[JSON output]' '--models[Show models only]' '--profiles[Show profiles only]' '--templates[Show templates only]' ;;
         remove|rm)
-          _arguments '--force[Skip confirmation prompt]' && _yallama_removal_targets ;;
+          _arguments '--force[Skip confirmation prompt]' && _fold_removal_targets ;;
         pull)
-          _yallama_cached_models ;;
+          _fold_cached_models ;;
         run|serve)
-          { _yallama_cached_models; _yallama_profiles } ;;
+          { _fold_cached_models; _fold_profiles } ;;
         profile)
           _arguments '1:subcommand:->sub' '*::profile-opts:->popts'
           case $state in
@@ -214,7 +214,7 @@ _yallama() {
               _describe 'profile subcommand' subcmds ;;
             popts)
               case $words[2] in
-                show|duplicate) _yallama_profiles ;;
+                show|duplicate) _fold_profiles ;;
               esac ;;
           esac ;;
         template)
@@ -230,7 +230,7 @@ _yallama() {
               _describe 'template subcommand' tsubcmds ;;
             topts)
               case $words[2] in
-                show|remove|rm) _yallama_templates ;;
+                show|remove|rm) _fold_templates ;;
               esac ;;
           esac ;;
         versions)
@@ -243,12 +243,12 @@ _yallama() {
   esac
 }
 
-_yallama
+_fold
 ZSHEOF
 }
 
-# Generate Bash completions for yallama.
-# Registers a _yallama_completions() function via 'complete -F'.
+# Generate Bash completions for fold.
+# Registers a _fold_completions() function via 'complete -F'.
 #
 # COMP_WORDBREAKS: bash completion normally splits on ':', which would break
 # "user/model:Q4_K_M" into two separate tokens. COMP_WORDBREAKS is narrowed
@@ -274,13 +274,13 @@ _${sn//-/_}_completions() {
   local -a models=() profiles=() templates=()
   while IFS= read -r _yl; do
     [[ -n "\$_yl" ]] && models+=("\$_yl")
-  done < <(yallama ls --quiet --models 2>/dev/null | awk 'index(\$0, "/") > 0 { print \$0 }')
+  done < <(fold ls --quiet --models 2>/dev/null | awk 'index(\$0, "/") > 0 { print \$0 }')
   while IFS= read -r _yp; do
     [[ -n "\$_yp" ]] && profiles+=("\$_yp")
-  done < <(yallama ls --quiet --profiles 2>/dev/null)
+  done < <(fold ls --quiet --profiles 2>/dev/null)
   while IFS= read -r _yt; do
     [[ -n "\$_yt" ]] && templates+=("\$_yt")
-  done < <(yallama ls --quiet --templates 2>/dev/null)
+  done < <(fold ls --quiet --templates 2>/dev/null)
   local -a removables=("${models[@]}" "${profiles[@]}")
   case "\$prev" in
     --path)  COMPREPLY=(\$(compgen -d -- "\$cur")); COMP_WORDBREAKS="\$_saved_wb"; return ;;
