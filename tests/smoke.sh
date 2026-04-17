@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT_PATH="${ROOT_DIR}/src/fold.sh"
+SCRIPT_PATH="${ROOT_DIR}/src/corral.sh"
 TEST_ROOT="$(mktemp -d)"
 
 PASS_COUNT=0
@@ -59,6 +59,18 @@ run_cmd() {
 
   set +e
   "$@" >"$stdout_file" 2>"$stderr_file"
+  RUN_STATUS=$?
+  set -e
+}
+
+run_cmd_with_input() {
+  local input="$1"
+  local stdout_file="$2"
+  local stderr_file="$3"
+  shift 3
+
+  set +e
+  "$@" >"$stdout_file" 2>"$stderr_file" <<<"$input"
   RUN_STATUS=$?
   set -e
 }
@@ -143,28 +155,28 @@ done
   exit 1
 }
 
-printf '%s\n' "$url" >>"${FOLD_TEST_LOG_DIR}/curl.log"
+printf '%s\n' "$url" >>"${CORRAL_TEST_LOG_DIR}/curl.log"
 
 if [[ "$url" == *"/releases/latest" ]]; then
-  tag="$(cat "${FOLD_TEST_STATE_DIR}/latest-tag")"
-  cat "${FOLD_TEST_FIXTURES_DIR}/release-${tag}.json"
+  tag="$(cat "${CORRAL_TEST_STATE_DIR}/latest-tag")"
+  cat "${CORRAL_TEST_FIXTURES_DIR}/release-${tag}.json"
   exit 0
 fi
 
 if [[ "$url" == *"/releases/tags/"* ]]; then
   tag="${url##*/}"
-  cat "${FOLD_TEST_FIXTURES_DIR}/release-${tag}.json"
+  cat "${CORRAL_TEST_FIXTURES_DIR}/release-${tag}.json"
   exit 0
 fi
 
 if [[ "$url" == *"/downloads/"* ]]; then
   asset_name="${url##*/}"
-  cp "${FOLD_TEST_FIXTURES_DIR}/${asset_name}" "$output"
+  cp "${CORRAL_TEST_FIXTURES_DIR}/${asset_name}" "$output"
   exit 0
 fi
 
 if [[ "$url" == *"huggingface.co/api/models"* ]]; then
-  fixture="${FOLD_TEST_FIXTURES_DIR}/hf-search-results.json"
+  fixture="${CORRAL_TEST_FIXTURES_DIR}/hf-search-results.json"
   if [[ -f "$fixture" ]]; then
     cat "$fixture"
   else
@@ -183,7 +195,32 @@ write_mock_open() {
   local path="$1"
   cat >"$path" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$1" >>"${FOLD_TEST_LOG_DIR}/open.log"
+printf '%s\n' "$1" >>"${CORRAL_TEST_LOG_DIR}/open.log"
+EOF
+  chmod +x "$path"
+}
+
+write_mock_brew() {
+  local path="$1"
+  cat >"$path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"${CORRAL_BREW_LOG}"
+
+if [[ "$1" == "install" && "$2" == "uv" ]]; then
+  cat >"${CORRAL_TEST_UV_PATH}" <<'UVEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${CORRAL_UV_LOG}"
+exit 0
+UVEOF
+  chmod +x "${CORRAL_TEST_UV_PATH}"
+  exit 0
+fi
+
+echo "mock brew: unsupported args: $*" >&2
+exit 1
 EOF
   chmod +x "$path"
 }
@@ -196,9 +233,11 @@ set -euo pipefail
 
 if [[ "$*" == *"pid=,comm=,args="* ]]; then
   cat <<'OUT'
-26366 awk awk { if (proc !~ /llama-(cli|server)/) next }
+26366 awk awk { # llama-server and mlx_lm.server default to port 8080 when --port is not explicitly given; if ($i == "-p") port = "is" }
 31111 llama-server /tmp/install/current/llama-server -hf demo/server-model --port 9000
 32222 llama-cli /tmp/install/current/llama-cli -hf demo/cli-model
+33332 Python /opt/homebrew/bin/python /opt/homebrew/bin/mlx_lm.chat --model mlx-community/Qwen2.5-7B-Instruct-4bit
+33333 mlx_lm.server /opt/homebrew/bin/mlx_lm.server --model mlx-community/Qwen2.5-7B-Instruct-4bit --port 8082
 OUT
   exit 0
 fi
@@ -209,10 +248,26 @@ EOF
   chmod +x "$path"
 }
 
+write_mock_uname() {
+  local target="$1"
+  local os_name="$2"
+  local machine="$3"
+  cat >"$target" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  -s) echo "$os_name" ;;
+  -m) echo "$machine" ;;
+  *)  echo "$os_name" ;;
+esac
+EOF
+  chmod +x "$target"
+}
+
 test_generated_standalone_script() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
-  local generated_script="${TEST_DIR}/fold-standalone"
+  local generated_script="${TEST_DIR}/corral-standalone"
 
   run_cmd "$stdout_file" "$stderr_file" bash "${ROOT_DIR}/tools/build.sh" --output "$generated_script"
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -238,15 +293,22 @@ test_generated_standalone_script() {
 setup_test_env() {
   TEST_DIR="$(mktemp -d "${TEST_ROOT}/case.XXXXXX")"
   export HOME="${TEST_DIR}/home"
-  export FOLD_TEST_FIXTURES_DIR="${TEST_DIR}/fixtures"
-  export FOLD_TEST_STATE_DIR="${TEST_DIR}/state"
-  export FOLD_TEST_LOG_DIR="${TEST_DIR}/logs"
+  export CORRAL_TEST_FIXTURES_DIR="${TEST_DIR}/fixtures"
+  export CORRAL_TEST_STATE_DIR="${TEST_DIR}/state"
+  export CORRAL_TEST_LOG_DIR="${TEST_DIR}/logs"
   export PATH="${TEST_DIR}/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  export SHELL="/bin/bash"
+  unset CORRAL_PROFILES_DIR
+  unset CORRAL_TEMPLATES_DIR
+  unset ZDOTDIR
 
-  mkdir -p "$HOME" "$FOLD_TEST_FIXTURES_DIR" "$FOLD_TEST_STATE_DIR" "$FOLD_TEST_LOG_DIR" "${TEST_DIR}/bin"
+  mkdir -p "$HOME" "$CORRAL_TEST_FIXTURES_DIR" "$CORRAL_TEST_STATE_DIR" "$CORRAL_TEST_LOG_DIR" "${TEST_DIR}/bin"
   write_mock_curl "${TEST_DIR}/bin/curl"
   write_mock_open "${TEST_DIR}/bin/open"
   write_mock_open "${TEST_DIR}/bin/xdg-open"
+  # Default to a non-arm64 platform so llama.cpp is the resolved backend in
+  # tests that do not explicitly mock uname for an arm64/MLX path.
+  write_mock_uname "${TEST_DIR}/bin/uname" "Linux" "x86_64"
 }
 
 test_top_level_help() {
@@ -287,9 +349,9 @@ test_install_flow() {
   local stderr_file="${TEST_DIR}/stderr"
 
   arch="$(expected_arch)"
-  create_fixture_tarball "$FOLD_TEST_FIXTURES_DIR" 'b1000' "$arch"
-  write_release_json "$FOLD_TEST_FIXTURES_DIR" 'b1000' "$arch"
-  write_latest_pointer "$FOLD_TEST_STATE_DIR" 'b1000'
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1000'
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --no-shell-profile
 
@@ -313,13 +375,218 @@ test_install_flow() {
     return
   fi
 
-  if ! assert_contains "$(cat "${FOLD_TEST_LOG_DIR}/curl.log")" "llama-b1000-bin-${arch}.tar.gz"; then
+  if ! assert_contains "$(cat "${CORRAL_TEST_LOG_DIR}/curl.log")" "llama-b1000-bin-${arch}.tar.gz"; then
     fail 'arch detection in install flow' 'expected asset download to match detected architecture'
     return
   fi
 
   pass 'mocked install flow'
   pass 'arch detection in install flow'
+}
+
+test_install_rewrites_stale_bash_path_block() {
+  local arch
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local bashrc="${HOME}/.bashrc"
+  local bashrc_contents
+
+  export SHELL="/bin/bash"
+
+  arch="$(expected_arch)"
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1000'
+
+  cat >"$bashrc" <<'EOF'
+# keep-before
+# BEGIN corral
+export PATH="/stale/path:$PATH"
+# END corral
+# keep-after
+EOF
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --shell-profile
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'install rewrites stale bash PATH block' "install failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  bashrc_contents="$(cat "$bashrc")"
+  if ! assert_contains "$bashrc_contents" "export PATH=\"${install_root}/current:\$PATH\""; then
+    fail 'install rewrites stale bash PATH block' "expected updated PATH block, got: $bashrc_contents"
+    return
+  fi
+
+  if assert_contains "$bashrc_contents" '/stale/path'; then
+    fail 'install removes stale bash PATH entry' "did not expect stale PATH entry after install: $bashrc_contents"
+    return
+  fi
+
+  if ! assert_contains "$bashrc_contents" '# keep-before' || ! assert_contains "$bashrc_contents" '# keep-after'; then
+    fail 'install preserves surrounding bash config' "expected surrounding bash config to remain, got: $bashrc_contents"
+    return
+  fi
+
+  pass 'install rewrites stale bash PATH block'
+  pass 'install removes stale bash PATH entry'
+  pass 'install preserves surrounding bash config'
+}
+
+test_install_creates_bash_completion_loader_when_bashrc_missing() {
+  local arch
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local bashrc="${HOME}/.bashrc"
+  local bashrc_contents
+
+  export SHELL="/bin/bash"
+
+  arch="$(expected_arch)"
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1000'
+
+  rm -f "$bashrc"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --shell-profile
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'install creates bash completion loader when bashrc is missing' "install failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ ! -f "$bashrc" ]]; then
+    fail 'install creates bash completion loader when bashrc is missing' 'expected install to create ~/.bashrc'
+    return
+  fi
+
+  if [[ ! -f "${HOME}/.bash_completion.d/corral" ]]; then
+    fail 'install writes bash completion file' 'expected bash completion file to be installed'
+    return
+  fi
+
+  bashrc_contents="$(cat "$bashrc")"
+  if ! assert_contains "$bashrc_contents" '# BEGIN corral bash completions'; then
+    fail 'install creates bash completion loader when bashrc is missing' "expected bash completion block, got: $bashrc_contents"
+    return
+  fi
+
+  if ! assert_contains "$bashrc_contents" "for f in ~/.bash_completion.d/*; do [[ -f \"\$f\" ]] && source \"\$f\"; done"; then
+    fail 'install writes bash completion loader' "expected bash completion loader line, got: $bashrc_contents"
+    return
+  fi
+
+  pass 'install creates bash completion loader when bashrc is missing'
+  pass 'install writes bash completion file'
+  pass 'install writes bash completion loader'
+}
+
+test_install_creates_zsh_completion_loader() {
+  local arch
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local zshrc="${HOME}/.zshrc"
+  local zshfunc_dir="${HOME}/.zfunc"
+  local zshrc_contents
+
+  export SHELL="/bin/zsh"
+
+  arch="$(expected_arch)"
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1000'
+
+  rm -f "$zshrc"
+  rm -rf "$zshfunc_dir"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --shell-profile
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'install creates zsh completion loader' "install failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ ! -f "${zshfunc_dir}/_corral" ]]; then
+    fail 'install writes zsh completion file' 'expected zsh completion file to be installed into ~/.zfunc'
+    return
+  fi
+
+  if [[ ! -f "$zshrc" ]]; then
+    fail 'install creates zshrc for completion loader' 'expected install to create ~/.zshrc'
+    return
+  fi
+
+  zshrc_contents="$(cat "$zshrc")"
+  if ! assert_contains "$zshrc_contents" '# BEGIN corral zsh completions'; then
+    fail 'install creates zsh completion loader' "expected zsh completion block, got: $zshrc_contents"
+    return
+  fi
+
+  if ! assert_contains "$zshrc_contents" "fpath=(\"${zshfunc_dir}\" \$fpath)"; then
+    fail 'install prepends zsh completion dir to fpath' "expected fpath update in zshrc, got: $zshrc_contents"
+    return
+  fi
+
+  if ! assert_contains "$zshrc_contents" 'autoload -Uz compinit' || ! assert_contains "$zshrc_contents" 'compinit'; then
+    fail 'install ensures zsh compinit runs' "expected compinit bootstrap in zshrc, got: $zshrc_contents"
+    return
+  fi
+
+  pass 'install creates zsh completion loader'
+  pass 'install writes zsh completion file'
+  pass 'install creates zshrc for completion loader'
+  pass 'install prepends zsh completion dir to fpath'
+  pass 'install ensures zsh compinit runs'
+}
+
+test_install_zsh_completions_respect_zdotdir() {
+  local arch
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local zdotdir="${HOME}/dot-zsh"
+  local zshrc="${zdotdir}/.zshrc"
+  local zshfunc_dir="${zdotdir}/.zfunc"
+  local zshrc_contents
+
+  export SHELL="/bin/zsh"
+  export ZDOTDIR="$zdotdir"
+
+  arch="$(expected_arch)"
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1000'
+
+  rm -rf "$zdotdir"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --shell-profile
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'install respects ZDOTDIR for zsh completions' "install failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ ! -f "${zshfunc_dir}/_corral" ]]; then
+    fail 'install writes zsh completion file under ZDOTDIR' "expected zsh completion file under \$ZDOTDIR/.zfunc"
+    return
+  fi
+
+  if [[ ! -f "$zshrc" ]]; then
+    fail 'install writes zshrc under ZDOTDIR' 'expected zshrc to be written under ZDOTDIR'
+    return
+  fi
+
+  zshrc_contents="$(cat "$zshrc")"
+  if ! assert_contains "$zshrc_contents" "fpath=(\"${zshfunc_dir}\" \$fpath)"; then
+    fail 'install uses ZDOTDIR zfunc path in zshrc' "expected ZDOTDIR-based fpath update, got: $zshrc_contents"
+    return
+  fi
+
+  pass 'install respects ZDOTDIR for zsh completions'
+  pass 'install writes zsh completion file under ZDOTDIR'
+  pass 'install writes zshrc under ZDOTDIR'
+  pass 'install uses ZDOTDIR zfunc path in zshrc'
 }
 
 test_update_flow() {
@@ -329,19 +596,19 @@ test_update_flow() {
   local stderr_file="${TEST_DIR}/stderr"
 
   arch="$(expected_arch)"
-  create_fixture_tarball "$FOLD_TEST_FIXTURES_DIR" 'b1000' "$arch"
-  create_fixture_tarball "$FOLD_TEST_FIXTURES_DIR" 'b1001' "$arch"
-  write_release_json "$FOLD_TEST_FIXTURES_DIR" 'b1000' "$arch"
-  write_release_json "$FOLD_TEST_FIXTURES_DIR" 'b1001' "$arch"
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1001' "$arch"
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1000' "$arch"
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1001' "$arch"
 
-  write_latest_pointer "$FOLD_TEST_STATE_DIR" 'b1000'
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1000'
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --no-shell-profile
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'mocked update flow' "initial install failed: $(cat "$stderr_file")"
     return
   fi
 
-  write_latest_pointer "$FOLD_TEST_STATE_DIR" 'b1001'
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1001'
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" update --path "$install_root" --no-shell-profile
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'mocked update flow' "update failed: $(cat "$stderr_file")"
@@ -377,7 +644,7 @@ test_pull_noninteractive() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' "$*" >"$FOLD_LLAMA_CLI_ARGS_LOG"
+printf '%s\n' "$*" >"$CORRAL_LLAMA_CLI_ARGS_LOG"
 
 if [[ -t 0 ]]; then
   echo 'stdin should not be attached to a terminal during pull' >&2
@@ -389,14 +656,14 @@ if read -r _; then
   exit 43
 fi
 
-mkdir -p "$FOLD_EXPECTED_CACHE_DIR"
+mkdir -p "$CORRAL_EXPECTED_CACHE_DIR"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
 
-  export FOLD_INSTALL_ROOT="$install_root"
-  export FOLD_EXPECTED_CACHE_DIR="$expected_cache_dir"
-  export FOLD_LLAMA_CLI_ARGS_LOG="$args_log"
+  export CORRAL_INSTALL_ROOT="$install_root"
+  export CORRAL_EXPECTED_CACHE_DIR="$expected_cache_dir"
+  export CORRAL_LLAMA_CLI_ARGS_LOG="$args_log"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_name"
 
@@ -428,6 +695,49 @@ EOF
   pass 'non-interactive pull'
 }
 
+test_pull_explicit_llama_backend_override() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local args_log="${TEST_DIR}/llama-cli-args.log"
+  local model_name='demo/test-model'
+  local expected_cache_dir="${HOME}/.cache/huggingface/hub/models--demo--test-model"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  mkdir -p "$current_link" "$(dirname "$expected_cache_dir")"
+  : >"$args_log"
+
+  cat >"${current_link}/llama-cli" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >"$CORRAL_LLAMA_CLI_ARGS_LOG"
+mkdir -p "$CORRAL_EXPECTED_CACHE_DIR"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-cli"
+
+  export CORRAL_INSTALL_ROOT="$install_root"
+  export CORRAL_EXPECTED_CACHE_DIR="$expected_cache_dir"
+  export CORRAL_LLAMA_CLI_ARGS_LOG="$args_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull --backend llama.cpp "$model_name"
+
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'pull explicit llama.cpp override' "pull failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$args_log")" "-hf ${model_name}"; then
+    fail 'pull explicit llama.cpp override' "expected llama-cli pull args, got: $(cat "$args_log")"
+    return
+  fi
+
+  pass 'pull explicit llama.cpp override'
+}
+
 test_pull_quant_not_confused_by_other_cached_quant() {
   local install_root="${HOME}/install-root"
   local current_link="${install_root}/current"
@@ -448,17 +758,17 @@ test_pull_quant_not_confused_by_other_cached_quant() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-printf '%s\n' "$*" >"$FOLD_LLAMA_CLI_ARGS_LOG"
-mkdir -p "$FOLD_EXPECTED_CACHE_DIR/snapshots/def456"
-: >"$FOLD_EXPECTED_CACHE_DIR/snapshots/def456/$FOLD_NEW_QUANT_FILENAME"
+printf '%s\n' "$*" >"$CORRAL_LLAMA_CLI_ARGS_LOG"
+mkdir -p "$CORRAL_EXPECTED_CACHE_DIR/snapshots/def456"
+: >"$CORRAL_EXPECTED_CACHE_DIR/snapshots/def456/$CORRAL_NEW_QUANT_FILENAME"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
 
-  export FOLD_INSTALL_ROOT="$install_root"
-  export FOLD_LLAMA_CLI_ARGS_LOG="$args_log"
-  export FOLD_EXPECTED_CACHE_DIR="$cache_dir"
-  export FOLD_NEW_QUANT_FILENAME='test-UD-Q4_K_M.gguf'
+  export CORRAL_INSTALL_ROOT="$install_root"
+  export CORRAL_LLAMA_CLI_ARGS_LOG="$args_log"
+  export CORRAL_EXPECTED_CACHE_DIR="$cache_dir"
+  export CORRAL_NEW_QUANT_FILENAME='test-UD-Q4_K_M.gguf'
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_spec"
 
@@ -497,9 +807,9 @@ test_status_and_versions() {
   local arch
 
   arch="$(expected_arch)"
-  create_fixture_tarball "$FOLD_TEST_FIXTURES_DIR" 'b1002' "$arch"
-  write_release_json "$FOLD_TEST_FIXTURES_DIR" 'b1002' "$arch"
-  write_latest_pointer "$FOLD_TEST_STATE_DIR" 'b1002'
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1002' "$arch"
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1002' "$arch"
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1002'
 
   mkdir -p "${install_root}/llama-b1000" "${install_root}/llama-b1001"
   ln -sfn "${install_root}/llama-b1001" "${install_root}/current"
@@ -510,7 +820,7 @@ test_status_and_versions() {
     return
   fi
 
-  if ! assert_contains "$(cat "$stdout_file")" 'Installed : b1001'; then
+  if ! assert_contains "$(cat "$stdout_file")" 'llama.cpp : b1001'; then
     fail 'status output for installed version' 'expected status to report installed tag b1001'
     return
   fi
@@ -641,7 +951,7 @@ test_run_and_serve_forwarding() {
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >"$FOLD_RUN_ARGS_LOG"
+printf '%s\n' "$*" >"$CORRAL_RUN_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
@@ -649,17 +959,17 @@ EOF
   cat >"${current_link}/llama-server" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >"$FOLD_SERVE_ARGS_LOG"
+printf '%s\n' "$*" >"$CORRAL_SERVE_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-server"
 
-  export FOLD_INSTALL_ROOT="$install_root"
-  export FOLD_RUN_ARGS_LOG="$run_args_log"
-  export FOLD_SERVE_ARGS_LOG="$serve_args_log"
+  export CORRAL_INSTALL_ROOT="$install_root"
+  export CORRAL_RUN_ARGS_LOG="$run_args_log"
+  export CORRAL_SERVE_ARGS_LOG="$serve_args_log"
   export HF_TOKEN='hf_test_token'
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run demo/run-model -- --threads 4
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run --backend llama.cpp demo/run-model -- --threads 4
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'run forwards model and extra args' "run failed: $(cat "$stderr_file")"
     return
@@ -670,7 +980,7 @@ EOF
     return
   fi
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve demo/serve-model -- --port 8081
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve --backend llama.cpp demo/serve-model -- --port 8081
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'serve forwards jinja and extra args' "serve failed: $(cat "$stderr_file")"
     return
@@ -683,6 +993,1078 @@ EOF
 
   pass 'run forwards model and extra args'
   pass 'serve forwards jinja and extra args'
+}
+
+test_mlx_install_uv_flow() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local uv_log="${TEST_DIR}/uv.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+  cat >"${TEST_DIR}/bin/uv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$CORRAL_UV_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/uv"
+  export CORRAL_UV_LOG="$uv_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --backend mlx --no-shell-profile
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx install uses uv flow' "install --backend mlx failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$uv_log")" 'tool install mlx-lm'; then
+    fail 'mlx install uses uv flow' "expected uv install call, got: $(cat "$uv_log")"
+    return
+  fi
+
+  pass 'mlx install uses uv flow'
+}
+
+test_mlx_run_dispatches() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local run_log="${TEST_DIR}/mlx-run.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.chat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$CORRAL_MLX_RUN_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.chat"
+  export CORRAL_MLX_RUN_LOG="$run_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run --backend mlx demo/run-model -- --max-tokens 16
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx run dispatches to mlx_lm.chat' "run failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$run_log")" '--model demo/run-model --max-tokens 16'; then
+    fail 'mlx run dispatches to mlx_lm.chat' "expected mlx_lm.chat args, got: $(cat "$run_log")"
+    return
+  fi
+
+  pass 'mlx run dispatches to mlx_lm.chat'
+}
+
+test_mlx_serve_dispatches() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local serve_log="${TEST_DIR}/mlx-serve.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.server" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$CORRAL_MLX_SERVE_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.server"
+  export CORRAL_MLX_SERVE_LOG="$serve_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve --backend mlx demo/serve-model -- --port 8899
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx serve dispatches to mlx_lm.server' "serve failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$serve_log")" '--model demo/serve-model --port 8899'; then
+    fail 'mlx serve dispatches to mlx_lm.server' "expected mlx_lm.server args, got: $(cat "$serve_log")"
+    return
+  fi
+
+  pass 'mlx serve dispatches to mlx_lm.server'
+}
+
+test_mlx_run_with_profile() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local run_log="${TEST_DIR}/mlx-run.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  mkdir -p "$CORRAL_PROFILES_DIR"
+  cat >"${CORRAL_PROFILES_DIR}/coder" <<'EOF'
+model=mlx-community/Qwen2.5-7B-Instruct-4bit
+--temp 0.2
+--max-tokens 64
+EOF
+
+  cat >"${TEST_DIR}/bin/mlx_lm.chat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$CORRAL_MLX_RUN_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.chat"
+  export CORRAL_MLX_RUN_LOG="$run_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx run infers backend from profile model' "run failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local args
+  args="$(cat "$run_log")"
+  if ! assert_contains "$args" '--model mlx-community/Qwen2.5-7B-Instruct-4bit'; then
+    fail 'mlx run infers backend from profile model' "expected model from profile, got: $args"
+    return
+  fi
+  if ! assert_contains "$args" '--temp 0.2' || ! assert_contains "$args" '--max-tokens 64'; then
+    fail 'mlx run infers backend from profile model' "expected flags from profile, got: $args"
+    return
+  fi
+
+  pass 'mlx run infers backend from profile model'
+}
+
+test_mlx_run_profile_backend_sections() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local run_log="${TEST_DIR}/mlx-run.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  mkdir -p "$CORRAL_PROFILES_DIR"
+
+  # Profile with common and backend-specific sections.
+  cat >"${CORRAL_PROFILES_DIR}/mixed" <<'EOF'
+model=mlx-community/Qwen2.5-7B-Instruct-4bit
+--temp 0.2
+[llama.cpp]
+--flash-attn on
+-ngl 999
+[mlx.run]
+--max-tokens 64
+[llama.cpp.serve]
+--cache-reuse 256
+EOF
+
+  cat >"${TEST_DIR}/bin/mlx_lm.chat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$CORRAL_MLX_RUN_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.chat"
+  export CORRAL_MLX_RUN_LOG="$run_log"
+
+  # Ensure model exists in HF cache so backend infers mlx from cache.
+  local mlx_cache_dir="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen2.5-7B-Instruct-4bit"
+  mkdir -p "${mlx_cache_dir}/snapshots/abc123"
+  : >"${mlx_cache_dir}/snapshots/abc123/model.safetensors"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run mixed
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx run loads backend-specific profile sections' "run failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local args
+  args="$(cat "$run_log")"
+  # Common flag: should be present.
+  if ! assert_contains "$args" '--temp 0.2'; then
+    fail 'mlx run loads backend-specific profile sections' "expected common --temp, got: $args"
+    return
+  fi
+  # [mlx.run]: should be present.
+  if ! assert_contains "$args" '--max-tokens 64'; then
+    fail 'mlx run loads backend-specific profile sections' "expected [mlx.run] flag, got: $args"
+    return
+  fi
+  # [llama.cpp]: should be absent.
+  if assert_contains "$args" '--flash-attn'; then
+    fail 'mlx run excludes llama.cpp backend sections' "unexpected llama.cpp flag in: $args"
+    return
+  fi
+  # [llama.cpp.serve]: should be absent.
+  if assert_contains "$args" '--cache-reuse'; then
+    fail 'mlx run excludes llama.cpp.serve section' "unexpected llama.cpp.serve flag in: $args"
+    return
+  fi
+
+  pass 'mlx run loads backend-specific profile sections'
+  pass 'mlx run excludes llama.cpp backend sections'
+}
+
+test_profile_set_from_template_preserves_backend_sections() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  export CORRAL_TEMPLATES_DIR="${HOME}/.config/corral/templates"
+  mkdir -p "$CORRAL_TEMPLATES_DIR" "$CORRAL_PROFILES_DIR"
+
+  # Create a user template with backend-specific sections.
+  cat >"${CORRAL_TEMPLATES_DIR}/mixed" <<'EOF'
+--temp 0.3
+[llama.cpp]
+--flash-attn on
+-ngl 999
+[mlx.run]
+--max-tokens 128
+EOF
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set testprof mixed some/model:Q4_K
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'profile set from template preserves backend sections' "set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local profile_content
+  profile_content="$(cat "${CORRAL_PROFILES_DIR}/testprof")"
+  if ! assert_contains "$profile_content" 'model=some/model:Q4_K'; then
+    fail 'profile set from template preserves backend sections' "expected model line, got: $profile_content"
+    return
+  fi
+  if ! assert_contains "$profile_content" '[llama.cpp]'; then
+    fail 'profile set from template preserves backend sections' "expected [llama.cpp] section, got: $profile_content"
+    return
+  fi
+  if ! assert_contains "$profile_content" '[mlx.run]'; then
+    fail 'profile set from template preserves backend sections' "expected [mlx.run] section, got: $profile_content"
+    return
+  fi
+  if ! assert_contains "$profile_content" '--max-tokens 128'; then
+    fail 'profile set from template preserves backend sections' "expected mlx flag, got: $profile_content"
+    return
+  fi
+
+  pass 'profile set from template preserves backend sections'
+}
+
+test_template_backend_sections_inherited_by_profile() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+
+  # Use the built-in 'code' template which now has [llama.cpp] and [llama.cpp.serve] sections.
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set testcoder code demo/model:Q4_K
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'template backend sections inherited by profile' "set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local profile_content
+  profile_content="$(cat "${CORRAL_PROFILES_DIR}/testcoder")"
+  if ! assert_contains "$profile_content" '[llama.cpp]'; then
+    fail 'template backend sections inherited by profile' "expected [llama.cpp] section from code template, got: $profile_content"
+    return
+  fi
+  if ! assert_contains "$profile_content" '--flash-attn on'; then
+    fail 'template backend sections inherited by profile' "expected llama.cpp flag from code template, got: $profile_content"
+    return
+  fi
+
+  pass 'template backend sections inherited by profile'
+}
+
+test_template_set_preserves_backend_sections() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  export CORRAL_TEMPLATES_DIR="${HOME}/.config/corral/templates"
+  mkdir -p "$CORRAL_TEMPLATES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytemplate -- \
+    --temp 0.5
+
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'template set creates valid template' "set failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local tmpl_content
+  tmpl_content="$(cat "${CORRAL_TEMPLATES_DIR}/mytemplate")"
+  if ! assert_contains "$tmpl_content" '--temp 0.5'; then
+    fail 'template set creates valid template' "expected flag, got: $tmpl_content"
+    return
+  fi
+
+  pass 'template set creates valid template'
+}
+
+test_mlx_serve_with_profile() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local serve_log="${TEST_DIR}/mlx-serve.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  mkdir -p "$CORRAL_PROFILES_DIR"
+  cat >"${CORRAL_PROFILES_DIR}/coder" <<'EOF'
+model=mlx-community/Qwen2.5-7B-Instruct-4bit
+--temp 0.2
+--port 8899
+EOF
+
+  cat >"${TEST_DIR}/bin/mlx_lm.server" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$CORRAL_MLX_SERVE_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.server"
+  export CORRAL_MLX_SERVE_LOG="$serve_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve coder
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx serve infers backend from profile model' "serve failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local args
+  args="$(cat "$serve_log")"
+  if ! assert_contains "$args" '--model mlx-community/Qwen2.5-7B-Instruct-4bit'; then
+    fail 'mlx serve infers backend from profile model' "expected model from profile, got: $args"
+    return
+  fi
+
+  if ! assert_contains "$args" '--temp 0.2' || ! assert_contains "$args" '--port 8899'; then
+    fail 'mlx serve infers backend from profile model' "expected flags from profile, got: $args"
+    return
+  fi
+
+  pass 'mlx serve infers backend from profile model'
+}
+
+test_llama_run_profile_backend_sections() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local run_args_log="${TEST_DIR}/run-args.log"
+
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  export CORRAL_INSTALL_ROOT="$install_root"
+  unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
+
+  mkdir -p "$current_link"
+  cat >"${current_link}/llama-cli" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"$CORRAL_RUN_ARGS_LOG"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-cli"
+  export CORRAL_RUN_ARGS_LOG="$run_args_log"
+
+  # Create a GGUF fixture so _infer_model_backend detects llama.cpp.
+  create_gguf_fixture "models--demo--model-GGUF" "model-Q4_K.gguf"
+
+  # Profile with backend-specific sections.
+  mkdir -p "$CORRAL_PROFILES_DIR"
+  cat >"${CORRAL_PROFILES_DIR}/lltest" <<'PROFILE'
+model=demo/model-GGUF:Q4_K
+--temp 0.2
+[llama.cpp]
+--flash-attn on
+-ngl 999
+[mlx]
+--max-tokens 128
+[llama.cpp.serve]
+--cache-reuse 256
+PROFILE
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run lltest
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'llama run loads backend-specific profile sections' "run failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local args
+  args="$(cat "$run_args_log")"
+  if ! assert_contains "$args" '--temp 0.2'; then
+    fail 'llama run loads backend-specific profile sections' "expected common flag, got: $args"
+    return
+  fi
+  if ! assert_contains "$args" '--flash-attn on'; then
+    fail 'llama run loads backend-specific profile sections' "expected [llama.cpp] flag, got: $args"
+    return
+  fi
+  if assert_contains "$args" '--max-tokens'; then
+    fail 'llama run excludes mlx backend sections' "unexpected mlx flag in: $args"
+    return
+  fi
+  if assert_contains "$args" '--cache-reuse'; then
+    fail 'llama run excludes llama.cpp.serve section' "unexpected serve flag in: $args"
+    return
+  fi
+
+  pass 'llama run loads backend-specific profile sections'
+  pass 'llama run excludes mlx backend sections'
+}
+
+test_mlx_quant_spec_warns() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local run_log="${TEST_DIR}/mlx-run.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.chat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$CORRAL_MLX_RUN_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.chat"
+  export CORRAL_MLX_RUN_LOG="$run_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run --backend mlx demo/run-model:Q4_K_M
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx run strips quant and warns' "run failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'does not use quant specifiers'; then
+    fail 'mlx run strips quant and warns' "expected quant warning, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$run_log")" '--model demo/run-model'; then
+    fail 'mlx run strips quant and warns' "expected model without quant, got: $(cat "$run_log")"
+    return
+  fi
+
+  pass 'mlx run strips quant and warns'
+}
+
+test_mlx_pull_dispatches_generate() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local pull_log="${TEST_DIR}/mlx-pull.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.generate" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$CORRAL_MLX_PULL_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.generate"
+  export CORRAL_MLX_PULL_LOG="$pull_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull mlx-community/Qwen2.5-7B-Instruct-4bit
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx pull dispatches to mlx_lm.generate' "pull failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$pull_log")" '--model mlx-community/Qwen2.5-7B-Instruct-4bit'; then
+    fail 'mlx pull dispatches to mlx_lm.generate' "expected model arg, got: $(cat "$pull_log")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$pull_log")" '--max-tokens 1'; then
+    fail 'mlx pull dispatches to mlx_lm.generate' "expected max-tokens warm-up arg, got: $(cat "$pull_log")"
+    return
+  fi
+
+  pass 'mlx pull dispatches to mlx_lm.generate'
+}
+
+test_mlx_pull_quant_spec_warns() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local pull_log="${TEST_DIR}/mlx-pull.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.generate" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$CORRAL_MLX_PULL_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.generate"
+  export CORRAL_MLX_PULL_LOG="$pull_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull --backend mlx mlx-community/Qwen2.5-7B-Instruct-4bit:Q4_K_M
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx pull strips quant and warns' "pull failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'does not use quant specifiers'; then
+    fail 'mlx pull strips quant and warns' "expected quant warning, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$pull_log")" '--model mlx-community/Qwen2.5-7B-Instruct-4bit'; then
+    fail 'mlx pull strips quant and warns' "expected stripped model id, got: $(cat "$pull_log")"
+    return
+  fi
+
+  if assert_contains "$(cat "$pull_log")" ':Q4_K_M'; then
+    fail 'mlx pull strips quant and warns' "did not expect quant suffix in mlx_lm.generate args: $(cat "$pull_log")"
+    return
+  fi
+
+  pass 'mlx pull strips quant and warns'
+}
+
+test_mlx_list_shows_cached_models() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local pull_log="${TEST_DIR}/mlx-pull.log"
+  local model_name='mlx-community/Qwen2.5-7B-Instruct-4bit'
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.generate" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"$CORRAL_MLX_PULL_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.generate"
+  export CORRAL_MLX_PULL_LOG="$pull_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_name"
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx list reads cached mlx models' "mlx pull failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  # Build a deterministic cache fixture; mocked mlx_lm.generate does not write
+  # HF cache files in tests.
+  local cache_dir="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen2.5-7B-Instruct-4bit"
+  mkdir -p "${cache_dir}/snapshots/abc123"
+  : >"${cache_dir}/snapshots/abc123/model.safetensors"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --backend mlx --quiet --models
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx list reads cached mlx models' "list failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" "$model_name"; then
+    fail 'mlx list reads cached mlx models' "expected model in mlx list output, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  pass 'mlx list reads cached mlx models'
+}
+
+test_mlx_remove_deletes_cache() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local model_name='mlx-community/Qwen2.5-7B-Instruct-4bit'
+  local cache_dir="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen2.5-7B-Instruct-4bit"
+
+  mkdir -p "$cache_dir"
+  : >"${cache_dir}/model.safetensors"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove --backend mlx "$model_name" --force
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx remove clears cache' "remove failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ -d "$cache_dir" ]]; then
+    fail 'mlx remove clears cache' 'expected model cache dir to be removed'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" "Removed MLX model: $model_name"; then
+    fail 'mlx remove clears cache' "expected success message, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  pass 'mlx remove clears cache'
+}
+
+test_mlx_remove_quant_warns_and_ignores() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local model_name='mlx-community/Qwen2.5-7B-Instruct-4bit'
+  local cache_dir="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen2.5-7B-Instruct-4bit"
+  mkdir -p "$cache_dir"
+  : >"${cache_dir}/weights.safetensors"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove --backend mlx "${model_name}:Q4_K_M" --force
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx remove ignores quant suffix with warning' "remove failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'does not use quant specifiers'; then
+    fail 'mlx remove ignores quant suffix with warning' "expected quant warning, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ -d "$cache_dir" ]]; then
+    fail 'mlx remove ignores quant suffix with warning' 'expected model cache dir to be removed'
+    return
+  fi
+
+  pass 'mlx remove ignores quant suffix with warning'
+}
+
+test_mlx_remove_fails_when_model_in_use_by_server() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local model_name='mlx-community/Qwen2.5-7B-Instruct-4bit'
+  local cache_dir="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen2.5-7B-Instruct-4bit"
+
+  mkdir -p "$cache_dir"
+  : >"${cache_dir}/weights.safetensors"
+
+  cat >"${TEST_DIR}/bin/ps" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"comm=,args="* ]]; then
+  cat <<'OUT'
+mlx_lm.server /opt/homebrew/bin/mlx_lm.server --model mlx-community/Qwen2.5-7B-Instruct-4bit --port 8082
+OUT
+  exit 0
+fi
+echo "mock ps: unsupported args: $*" >&2
+exit 1
+EOF
+  chmod +x "${TEST_DIR}/bin/ps"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove --backend mlx "$model_name" --force
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'mlx remove blocks model in use by server' 'expected remove to fail while model is in use'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'currently in use by mlx_lm.chat or mlx_lm.server'; then
+    fail 'mlx remove blocks model in use by server' "expected in-use error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ ! -d "$cache_dir" ]]; then
+    fail 'mlx remove blocks model in use by server' 'expected model cache dir to remain'
+    return
+  fi
+
+  pass 'mlx remove blocks model in use by server'
+}
+
+test_mlx_remove_fails_when_model_in_use_by_chat() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local model_name='mlx-community/Qwen2.5-7B-Instruct-4bit'
+  local cache_dir="${HOME}/.cache/huggingface/hub/models--mlx-community--Qwen2.5-7B-Instruct-4bit"
+
+  mkdir -p "$cache_dir"
+  : >"${cache_dir}/weights.safetensors"
+
+  cat >"${TEST_DIR}/bin/ps" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"comm=,args="* ]]; then
+  cat <<'OUT'
+Python /opt/homebrew/bin/python /opt/homebrew/bin/mlx_lm.chat --model mlx-community/Qwen2.5-7B-Instruct-4bit
+OUT
+  exit 0
+fi
+echo "mock ps: unsupported args: $*" >&2
+exit 1
+EOF
+  chmod +x "${TEST_DIR}/bin/ps"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" remove --backend mlx "$model_name" --force
+  if [[ $RUN_STATUS -eq 0 ]]; then
+    fail 'mlx remove blocks model in use by chat' 'expected remove to fail while model is in use'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'currently in use by mlx_lm.chat or mlx_lm.server'; then
+    fail 'mlx remove blocks model in use by chat' "expected in-use error, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ ! -d "$cache_dir" ]]; then
+    fail 'mlx remove blocks model in use by chat' 'expected model cache dir to remain'
+    return
+  fi
+
+  pass 'mlx remove blocks model in use by chat'
+}
+
+test_mlx_update_uses_uv_upgrade() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local uv_log="${TEST_DIR}/uv.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.generate" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.generate"
+
+  cat >"${TEST_DIR}/bin/uv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$CORRAL_UV_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/uv"
+  export CORRAL_UV_LOG="$uv_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" update --backend mlx
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx update uses uv tool upgrade' "update failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$uv_log")" 'tool upgrade mlx-lm'; then
+    fail 'mlx update uses uv tool upgrade' "expected uv upgrade call, got: $(cat "$uv_log")"
+    return
+  fi
+
+  pass 'mlx update uses uv tool upgrade'
+}
+
+test_mlx_versions_reports_installed_version() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.generate" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.generate"
+
+  cat >"${TEST_DIR}/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo '0.30.1'
+EOF
+  chmod +x "${TEST_DIR}/bin/python3"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" versions --backend mlx
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx versions reports installed package version' "versions failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'mlx' || ! assert_contains "$out" '0.30.1'; then
+    fail 'mlx versions reports installed package version' "expected mlx version output, got: $out"
+    return
+  fi
+
+  pass 'mlx versions reports installed package version'
+}
+
+test_mlx_versions_fallbacks_to_uv_tool_list() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.generate" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.generate"
+
+  # Simulate a layout where python cannot import mlx_lm directly.
+  cat >"${TEST_DIR}/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 1
+EOF
+  chmod +x "${TEST_DIR}/bin/python3"
+
+  cat >"${TEST_DIR}/bin/uv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "tool" && "$2" == "list" ]]; then
+  printf '%s\n' 'mlx-lm 0.31.2'
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "${TEST_DIR}/bin/uv"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" versions --backend mlx
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx versions falls back to uv tool list' "versions failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'mlx' || ! assert_contains "$out" '0.31.2'; then
+    fail 'mlx versions falls back to uv tool list' "expected uv-derived mlx version output, got: $out"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" status --backend mlx
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx status falls back to uv tool list' "status failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'installed (0.31.2)'; then
+    fail 'mlx status falls back to uv tool list' "expected uv-derived status version output, got: $out"
+    return
+  fi
+
+  pass 'mlx versions falls back to uv tool list'
+  pass 'mlx status falls back to uv tool list'
+}
+
+test_mlx_prune_is_noop() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" prune --backend mlx
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx prune is a no-op' "prune failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" "Nothing to prune for MLX"; then
+    fail 'mlx prune is a no-op' "expected no-op message, got: $out"
+    return
+  fi
+
+  pass 'mlx prune is a no-op'
+}
+
+test_list_llama_cpp_ignores_non_gguf_models() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--unsloth--Qwen3.5-35B-A3B-GGUF" "model-Q4_K_M.gguf" 1024
+
+  local mlx_cache_dir="${HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit"
+  mkdir -p "$mlx_cache_dir"
+  : >"${mlx_cache_dir}/model.safetensors"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --backend llama.cpp --quiet --models
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'llama.cpp list ignores non-gguf models' "list failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M'; then
+    fail 'llama.cpp list ignores non-gguf models' "expected GGUF model in output, got: $out"
+    return
+  fi
+  if assert_contains "$out" 'mlx-community/gemma-4-26b-a4b-it-4bit'; then
+    fail 'llama.cpp list ignores non-gguf models' "did not expect non-GGUF mlx model in llama.cpp output, got: $out"
+    return
+  fi
+
+  pass 'llama.cpp list ignores non-gguf models'
+}
+
+test_mlx_list_discovers_cache() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local model_name='mlx-community/gemma-4-26b-a4b-it-4bit'
+
+  local mlx_cache_dir="${HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit"
+  mkdir -p "$mlx_cache_dir"
+  : >"${mlx_cache_dir}/model.safetensors"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --backend mlx --quiet --models
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx list discovers cache' "list failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stdout_file")" "$model_name"; then
+    fail 'mlx list discovers cache' "expected cache-discovered mlx model, got: $(cat "$stdout_file")"
+    return
+  fi
+
+  pass 'mlx list discovers cache'
+}
+
+test_list_default_includes_both_backends() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  create_gguf_fixture "models--unsloth--Qwen3.5-35B-A3B-GGUF" "model-Q4_K_M.gguf" 1024
+
+  local mlx_cache_dir="${HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit"
+  mkdir -p "$mlx_cache_dir"
+  : >"${mlx_cache_dir}/model.safetensors"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" list --quiet --models
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'default list includes both backends' "list failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_M'; then
+    fail 'default list includes both backends' "expected llama.cpp GGUF entry, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" 'mlx-community/gemma-4-26b-a4b-it-4bit'; then
+    fail 'default list includes both backends' "expected mlx cache entry, got: $out"
+    return
+  fi
+
+  pass 'default list includes both backends'
+}
+
+test_mlx_uninstall_removes_tool() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local uv_log="${TEST_DIR}/uv.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.generate" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.generate"
+
+  cat >"${TEST_DIR}/bin/uv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$CORRAL_UV_LOG"
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/uv"
+  export CORRAL_UV_LOG="$uv_log"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" uninstall --backend mlx --force
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'mlx uninstall removes tool' "uninstall failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$uv_log")" 'tool uninstall mlx-lm'; then
+    fail 'mlx uninstall removes tool' "expected uv uninstall call, got: $(cat "$uv_log")"
+    return
+  fi
+
+  pass 'mlx uninstall removes tool'
+}
+
+test_mlx_unsupported_platform_errors() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Linux" "x86_64"
+  cat >"${TEST_DIR}/bin/mlx_lm.chat" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.chat"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run --backend mlx demo/run-model
+  if [[ $RUN_STATUS -ne 0 ]] && assert_contains "$(cat "$stderr_file")" 'MLX backend is only supported on macOS Apple Silicon'; then
+    pass 'mlx backend errors on unsupported platform'
+  else
+    fail 'mlx backend errors on unsupported platform' "expected platform error, got: $(cat "$stderr_file")"
+  fi
+}
+
+test_status_shows_backend_and_platform() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.generate" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.generate"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" status --backend mlx
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'status shows backend and platform' "status failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'Platform  :'; then
+    fail 'status shows backend and platform' "expected platform line, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" 'Backend   : mlx'; then
+    fail 'status shows backend and platform' "expected mlx backend line, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" 'mlx-lm    : installed'; then
+    fail 'status shows backend and platform' "expected mlx-lm installed line, got: $out"
+    return
+  fi
+
+  pass 'status shows backend and platform'
+}
+
+test_status_combined_shows_both_backends() {
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  mkdir -p "${install_root}/llama-b1001"
+  ln -sfn "${install_root}/llama-b1001" "${install_root}/current"
+
+  cat >"${TEST_DIR}/bin/mlx_lm.generate" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "${TEST_DIR}/bin/mlx_lm.generate"
+
+  # Mock python3 for _mlx_lm_version.
+  cat >"${TEST_DIR}/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+echo "0.99.0"
+EOF
+  chmod +x "${TEST_DIR}/bin/python3"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" status --path "$install_root"
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'status combined shows both backends' "status failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'llama.cpp : b1001'; then
+    fail 'status combined shows both backends' "expected llama.cpp line, got: $out"
+    return
+  fi
+  if ! assert_contains "$out" 'mlx-lm    : installed'; then
+    fail 'status combined shows both backends' "expected mlx-lm line, got: $out"
+    return
+  fi
+
+  pass 'status combined shows both backends'
 }
 
 # ── quant-aware tests ─────────────────────────────────────────────────────────
@@ -792,7 +2174,7 @@ test_list_includes_profiles_and_models_sections() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
 
   create_gguf_fixture "models--demo--combo-GGUF" "combo-Q4_K_M.gguf" 1024
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder 'demo/combo-GGUF:Q4_K_M'
@@ -829,7 +2211,7 @@ test_list_models_profiles_scopes() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
 
   create_gguf_fixture "models--demo--scope-GGUF" "scope-Q8_0.gguf" 1024
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set scoped 'demo/scope-GGUF:Q8_0'
@@ -873,7 +2255,7 @@ test_list_json_and_quiet_include_profiles() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
 
   create_gguf_fixture "models--demo--jsonq-GGUF" "jsonq-UD-Q6_K.gguf" 1024
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set jcoder 'demo/jsonq-GGUF:UD-Q6_K'
@@ -930,7 +2312,7 @@ test_list_includes_templates_section() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
+  export CORRAL_TEMPLATES_DIR="${HOME}/.config/corral/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytmp user/tmpl-model:Q4_K -- --temp 0.5
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -966,7 +2348,7 @@ test_list_templates_scope() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
+  export CORRAL_TEMPLATES_DIR="${HOME}/.config/corral/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set onlytmp user/tmpl-model:Q4_K -- --temp 0.5
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -998,7 +2380,7 @@ test_list_json_and_quiet_include_templates() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
+  export CORRAL_TEMPLATES_DIR="${HOME}/.config/corral/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set jsonqtmp user/tmpl-model:Q4_K -- --temp 0.5
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1179,13 +2561,13 @@ test_pull_quant_match_is_case_insensitive() {
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >"$FOLD_LLAMA_CLI_ARGS_LOG"
+printf '%s\n' "$*" >"$CORRAL_LLAMA_CLI_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
 
-  export FOLD_INSTALL_ROOT="$install_root"
-  export FOLD_LLAMA_CLI_ARGS_LOG="$args_log"
+  export CORRAL_INSTALL_ROOT="$install_root"
+  export CORRAL_LLAMA_CLI_ARGS_LOG="$args_log"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_spec"
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1254,6 +2636,102 @@ write_hf_search_fixture() {
 EOF
 }
 
+write_hf_search_fixture_mlx() {
+  local fixtures_dir="$1"
+  cat >"${fixtures_dir}/hf-search-results.json" <<'EOF'
+[
+  {
+    "modelId": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+    "downloads": 5000,
+    "likes": 200,
+    "tags": ["mlx", "text-generation"],
+    "siblings": []
+  },
+  {
+    "modelId": "org/mlx-tagged-model",
+    "downloads": 1200,
+    "likes": 80,
+    "tags": ["MLX", "other"],
+    "siblings": []
+  },
+  {
+    "modelId": "org/gguf-only-model",
+    "downloads": 7000,
+    "likes": 300,
+    "library_name": "gguf",
+    "tags": ["gguf"],
+    "siblings": [{"rfilename": "model-Q4_K_M.gguf"}]
+  },
+  {
+    "modelId": "org/transformers-model",
+    "downloads": 9999,
+    "likes": 400,
+    "library_name": "transformers",
+    "tags": ["transformers"],
+    "siblings": [{"rfilename": "model.safetensors"}]
+  }
+]
+EOF
+}
+
+test_search_mlx_backend_filters_results() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture_mlx "$CORRAL_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search --backend mlx qwen --quiet
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search --backend mlx filters to mlx-compatible models' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'mlx-community/Qwen2.5-7B-Instruct-4bit'; then
+    fail 'search --backend mlx filters to mlx-compatible models' "expected mlx-community model, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'org/mlx-tagged-model'; then
+    fail 'search --backend mlx filters to mlx-compatible models' "expected mlx-tagged model, got: $out"
+    return
+  fi
+
+  if assert_contains "$out" 'org/gguf-only-model' || assert_contains "$out" 'org/transformers-model'; then
+    fail 'search --backend mlx filters to mlx-compatible models' "unexpected non-mlx models in output: $out"
+    return
+  fi
+
+  pass 'search --backend mlx filters to mlx-compatible models'
+}
+
+test_search_mlx_quants_warns_and_ignores() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_hf_search_fixture_mlx "$CORRAL_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search --backend mlx qwen --quants --json
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'search --backend mlx ignores --quants with warning' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" '--quants is only supported for llama.cpp/GGUF search'; then
+    fail 'search --backend mlx ignores --quants with warning' "expected warning, got: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ "$(jq '[ .[] | select(has("quants")) ] | length' "$stdout_file")" -ne 0 ]]; then
+    fail 'search --backend mlx ignores --quants with warning' "did not expect quants fields in mlx json output: $(cat "$stdout_file")"
+    return
+  fi
+
+  pass 'search --backend mlx ignores --quants with warning'
+}
+
 test_search_no_query_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
@@ -1270,7 +2748,7 @@ test_search_returns_results() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$CORRAL_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1313,7 +2791,7 @@ test_search_quiet() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$CORRAL_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quiet
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1351,7 +2829,7 @@ test_search_json() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$CORRAL_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --json
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1425,11 +2903,11 @@ test_search_sort_option() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$CORRAL_TEST_FIXTURES_DIR"
 
   # Default sort should be trendingScore.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma
-  if ! assert_contains "$(cat "${FOLD_TEST_LOG_DIR}/curl.log")" 'sort=trendingScore'; then
+  if ! assert_contains "$(cat "${CORRAL_TEST_LOG_DIR}/curl.log")" 'sort=trendingScore'; then
     fail 'search default sort is trending' "expected sort=trendingScore in request URL"
     return
   fi
@@ -1437,7 +2915,7 @@ test_search_sort_option() {
 
   # --sort downloads should pass sort=downloads to the API.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --sort downloads
-  if ! assert_contains "$(cat "${FOLD_TEST_LOG_DIR}/curl.log")" 'sort=downloads'; then
+  if ! assert_contains "$(cat "${CORRAL_TEST_LOG_DIR}/curl.log")" 'sort=downloads'; then
     fail 'search --sort downloads' "expected sort=downloads in request URL"
     return
   fi
@@ -1445,7 +2923,7 @@ test_search_sort_option() {
 
   # --sort newest should map to lastModified in the URL.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --sort newest
-  if ! assert_contains "$(cat "${FOLD_TEST_LOG_DIR}/curl.log")" 'sort=lastModified'; then
+  if ! assert_contains "$(cat "${CORRAL_TEST_LOG_DIR}/curl.log")" 'sort=lastModified'; then
     fail 'search --sort newest maps to lastModified' "expected sort=lastModified in request URL"
     return
   fi
@@ -1464,7 +2942,7 @@ test_search_quants_tabular() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$CORRAL_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1507,7 +2985,7 @@ test_search_quants_quiet() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$CORRAL_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants --quiet
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1540,7 +3018,7 @@ test_search_quants_json() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$CORRAL_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants --json
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1569,7 +3047,7 @@ test_search_default_quant_json() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$CORRAL_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants --json
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1600,7 +3078,7 @@ test_search_default_quant_tabular() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  write_hf_search_fixture "$FOLD_TEST_FIXTURES_DIR"
+  write_hf_search_fixture "$CORRAL_TEST_FIXTURES_DIR"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma --quants
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1629,7 +3107,7 @@ test_browse_opens_url() {
     return
   fi
 
-  local open_log="${FOLD_TEST_LOG_DIR}/open.log"
+  local open_log="${CORRAL_TEST_LOG_DIR}/open.log"
   if ! assert_contains "$(cat "$open_log" 2>/dev/null)" 'https://huggingface.co/demo/test-model'; then
     fail 'browse opens correct URL' "expected HF URL in open log, got: $(cat "$open_log" 2>/dev/null)"
     return
@@ -1715,6 +3193,16 @@ test_ps_ignores_awk_false_positive() {
     return
   fi
 
+  if ! assert_contains "$out" 'mlx_lm.server'; then
+    fail 'ps includes mlx server rows' "expected mlx_lm.server row, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'mlx_lm.chat'; then
+    fail 'ps includes mlx chat rows' "expected mlx_lm.chat row, got: $out"
+    return
+  fi
+
   if assert_contains "$out" 'awk'; then
     fail 'ps excludes awk false positive' "did not expect awk row, got: $out"
     return
@@ -1741,7 +3229,7 @@ test_profile_set_and_show() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- \
@@ -1757,7 +3245,7 @@ test_profile_set_and_show() {
     return
   fi
 
-  local profile_file="${FOLD_PROFILES_DIR}/coder"
+  local profile_file="${CORRAL_PROFILES_DIR}/coder"
   if [[ ! -f "$profile_file" ]]; then
     fail 'profile set creates profile file' "expected profile file at $profile_file"
     return
@@ -1824,7 +3312,7 @@ test_remove_profile_via_top_level_remove() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder 'demo/model:Q4_K'
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -1837,7 +3325,7 @@ test_remove_profile_via_top_level_remove() {
     fail 'remove/rm supports profile removal' "remove profile failed: $(cat "$stderr_file")"
     return
   fi
-  if [[ -f "${FOLD_PROFILES_DIR}/coder" ]]; then
+  if [[ -f "${CORRAL_PROFILES_DIR}/coder" ]]; then
     fail 'remove/rm supports profile removal' 'expected profile file removed by top-level remove'
     return
   fi
@@ -1848,7 +3336,7 @@ test_remove_profile_via_top_level_remove() {
     fail 'remove/rm supports profile removal' "rm profile failed: $(cat "$stderr_file")"
     return
   fi
-  if [[ -f "${FOLD_PROFILES_DIR}/coder" ]]; then
+  if [[ -f "${CORRAL_PROFILES_DIR}/coder" ]]; then
     fail 'remove/rm supports profile removal' 'expected profile file removed by top-level rm alias'
     return
   fi
@@ -1878,7 +3366,7 @@ test_profile_duplicate() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- --ctx-size 65536 -ngl 99
@@ -1889,12 +3377,12 @@ test_profile_duplicate() {
     return
   fi
 
-  if [[ ! -f "${FOLD_PROFILES_DIR}/coder-hi-ctx" ]]; then
+  if [[ ! -f "${CORRAL_PROFILES_DIR}/coder-hi-ctx" ]]; then
     fail 'profile duplicate copies profile' "expected destination profile file to exist"
     return
   fi
 
-  if ! diff -q "${FOLD_PROFILES_DIR}/coder" "${FOLD_PROFILES_DIR}/coder-hi-ctx" >/dev/null 2>&1; then
+  if ! diff -q "${CORRAL_PROFILES_DIR}/coder" "${CORRAL_PROFILES_DIR}/coder-hi-ctx" >/dev/null 2>&1; then
     fail 'profile duplicate copies profile' "expected source and destination to have identical contents"
     return
   fi
@@ -1906,7 +3394,7 @@ test_profile_duplicate_dest_exists_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL'
@@ -1931,7 +3419,7 @@ test_profile_invalid_name_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set 'bad name' 'demo/model'
   if [[ $RUN_STATUS -eq 0 ]]; then
@@ -1951,7 +3439,7 @@ test_profile_overwrite() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- --ctx-size 32768
@@ -1963,13 +3451,13 @@ test_profile_overwrite() {
     return
   fi
 
-  if ! assert_contains "$(cat "${FOLD_PROFILES_DIR}/coder")" '--ctx-size'; then
+  if ! assert_contains "$(cat "${CORRAL_PROFILES_DIR}/coder")" '--ctx-size'; then
     fail 'profile set overwrites existing' "expected flags in overwritten profile"
     return
   fi
 
   # The old value 32768 should not appear; 65536 should.
-  if assert_contains "$(cat "${FOLD_PROFILES_DIR}/coder")" '32768'; then
+  if assert_contains "$(cat "${CORRAL_PROFILES_DIR}/coder")" '32768'; then
     fail 'profile set overwrites existing' "expected old ctx-size 32768 to be gone after overwrite"
     return
   fi
@@ -1984,24 +3472,24 @@ test_run_with_profile() {
   local stderr_file="${TEST_DIR}/stderr"
   local run_args_log="${TEST_DIR}/run-args.log"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
-  export FOLD_INSTALL_ROOT="$install_root"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  export CORRAL_INSTALL_ROOT="$install_root"
 
   mkdir -p "$current_link"
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$FOLD_RUN_ARGS_LOG"
+printf '%s\n' "$*" >"$CORRAL_RUN_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
-  export FOLD_RUN_ARGS_LOG="$run_args_log"
+  export CORRAL_RUN_ARGS_LOG="$run_args_log"
   unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- \
     --ctx-size 65536 --temp 0.2 -ngl 99
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run coder
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run --backend llama.cpp coder
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'run with profile resolves model and flags' "run coder failed: $(cat "$stderr_file")"
     return
@@ -2035,24 +3523,24 @@ test_serve_with_profile() {
   local stderr_file="${TEST_DIR}/stderr"
   local serve_args_log="${TEST_DIR}/serve-args.log"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
-  export FOLD_INSTALL_ROOT="$install_root"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  export CORRAL_INSTALL_ROOT="$install_root"
 
   mkdir -p "$current_link"
   cat >"${current_link}/llama-server" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$FOLD_SERVE_ARGS_LOG"
+printf '%s\n' "$*" >"$CORRAL_SERVE_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-server"
-  export FOLD_SERVE_ARGS_LOG="$serve_args_log"
+  export CORRAL_SERVE_ARGS_LOG="$serve_args_log"
   unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- \
     --ctx-size 65536 --temp 0.2 -ngl 99
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve coder
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve --backend llama.cpp coder
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'serve with profile resolves model and flags' "serve coder failed: $(cat "$stderr_file")"
     return
@@ -2086,24 +3574,24 @@ test_serve_with_profile_and_extra_args() {
   local stderr_file="${TEST_DIR}/stderr"
   local serve_args_log="${TEST_DIR}/serve-args.log"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
-  export FOLD_INSTALL_ROOT="$install_root"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  export CORRAL_INSTALL_ROOT="$install_root"
 
   mkdir -p "$current_link"
   cat >"${current_link}/llama-server" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$FOLD_SERVE_ARGS_LOG"
+printf '%s\n' "$*" >"$CORRAL_SERVE_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-server"
-  export FOLD_SERVE_ARGS_LOG="$serve_args_log"
+  export CORRAL_SERVE_ARGS_LOG="$serve_args_log"
   unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set coder \
     'unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL' -- \
     --ctx-size 65536 -ngl 99
 
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve coder -- --port 8081
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve --backend llama.cpp coder -- --port 8081
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'serve with profile appends extra args' "serve coder -- --port 8081 failed: $(cat "$stderr_file")"
     return
@@ -2131,8 +3619,8 @@ test_run_missing_profile_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles-empty"
-  export FOLD_INSTALL_ROOT="$install_root"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles-empty"
+  export CORRAL_INSTALL_ROOT="$install_root"
   mkdir -p "$current_link"
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
@@ -2162,31 +3650,31 @@ test_profile_command_sections() {
   local run_args_log="${TEST_DIR}/run-args.log"
   local serve_args_log="${TEST_DIR}/serve-args.log"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
-  export FOLD_INSTALL_ROOT="$install_root"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  export CORRAL_INSTALL_ROOT="$install_root"
   unset HF_TOKEN HF_HUB_TOKEN HUGGING_FACE_HUB_TOKEN
 
   mkdir -p "$current_link"
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$FOLD_RUN_ARGS_LOG"
+printf '%s\n' "$*" >"$CORRAL_RUN_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
 
   cat >"${current_link}/llama-server" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"$FOLD_SERVE_ARGS_LOG"
+printf '%s\n' "$*" >"$CORRAL_SERVE_ARGS_LOG"
 exit 0
 EOF
   chmod +x "${current_link}/llama-server"
 
-  export FOLD_RUN_ARGS_LOG="$run_args_log"
-  export FOLD_SERVE_ARGS_LOG="$serve_args_log"
+  export CORRAL_RUN_ARGS_LOG="$run_args_log"
+  export CORRAL_SERVE_ARGS_LOG="$serve_args_log"
 
   # Write a profile with common flags and per-command sections.
-  mkdir -p "$FOLD_PROFILES_DIR"
-  cat >"${FOLD_PROFILES_DIR}/coder" <<'PROFILE'
+  mkdir -p "$CORRAL_PROFILES_DIR"
+  cat >"${CORRAL_PROFILES_DIR}/coder" <<'PROFILE'
 model=demo/model:Q4_K
 --temp 0.2
 -ngl 99
@@ -2198,7 +3686,7 @@ model=demo/model:Q4_K
 PROFILE
 
   # serve: should include common + [serve] flags, not [run] flags.
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve coder
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" serve --backend llama.cpp coder
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'profile [serve] section included for serve' "serve coder failed: $(cat "$stderr_file")"
     return
@@ -2226,7 +3714,7 @@ PROFILE
   pass 'profile [serve] section excluded for serve'
 
   # run: should include common + [run] flags, not [serve] flags.
-  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run coder
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" run --backend llama.cpp coder
   if [[ $RUN_STATUS -ne 0 ]]; then
     fail 'profile [run] section included for run' "run coder failed: $(cat "$stderr_file")"
     return
@@ -2258,8 +3746,8 @@ test_profile_set_builtin_with_model() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
-  unset FOLD_TEMPLATES_DIR
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  unset CORRAL_TEMPLATES_DIR
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mycoder code user/qwen2.5:Q4_K
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2299,8 +3787,8 @@ test_profile_set_builtin_no_model_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
-  unset FOLD_TEMPLATES_DIR
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  unset CORRAL_TEMPLATES_DIR
 
   # 'code' built-in has no model= line; no model arg provided → should error.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mycoder code
@@ -2320,8 +3808,8 @@ test_profile_set_user_template() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
-  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  export CORRAL_TEMPLATES_DIR="${HOME}/.config/corral/templates"
 
   # Create a user-defined template with a default model.
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytemplate user/mymodel:Q4_K -- --temp 0.5 --ctx-size 4096
@@ -2356,8 +3844,8 @@ test_profile_set_template_overwrites_existing() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_PROFILES_DIR="${HOME}/.config/fold/profiles"
-  unset FOLD_TEMPLATES_DIR
+  export CORRAL_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  unset CORRAL_TEMPLATES_DIR
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" profile set mypro user/original:Q4_K -- --temp 0.9
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2417,7 +3905,7 @@ test_template_show_builtin() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  unset FOLD_TEMPLATES_DIR
+  unset CORRAL_TEMPLATES_DIR
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template show code
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2443,7 +3931,7 @@ test_template_set_and_show() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
+  export CORRAL_TEMPLATES_DIR="${HOME}/.config/corral/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mywork user/work-model -- --temp 0.3 --ctx-size 8192
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2479,7 +3967,7 @@ test_template_remove() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
+  export CORRAL_TEMPLATES_DIR="${HOME}/.config/corral/templates"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template set mytmp -- --temp 0.5
   if [[ $RUN_STATUS -ne 0 ]]; then
@@ -2511,7 +3999,7 @@ test_template_remove_builtin_errors() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  unset FOLD_TEMPLATES_DIR
+  unset CORRAL_TEMPLATES_DIR
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" template remove chat
   if [[ $RUN_STATUS -eq 0 ]]; then
@@ -2530,11 +4018,11 @@ test_template_user_overrides_builtin() {
   local stdout_file="${TEST_DIR}/stdout"
   local stderr_file="${TEST_DIR}/stderr"
 
-  export FOLD_TEMPLATES_DIR="${HOME}/.config/fold/templates"
+  export CORRAL_TEMPLATES_DIR="${HOME}/.config/corral/templates"
 
   # Write a user template named 'code' that overrides the built-in.
-  mkdir -p "$FOLD_TEMPLATES_DIR"
-  cat >"${FOLD_TEMPLATES_DIR}/code" <<'EOF'
+  mkdir -p "$CORRAL_TEMPLATES_DIR"
+  cat >"${CORRAL_TEMPLATES_DIR}/code" <<'EOF'
 --temp 0.9
 --ctx-size 1024
 EOF
@@ -2560,6 +4048,284 @@ EOF
   pass 'profile user template overrides builtin'
 }
 
+# ── combined backend tests ────────────────────────────────────────────────────
+
+write_hf_search_fixture_combined() {
+  local fixtures_dir="$1"
+  cat >"${fixtures_dir}/hf-search-results.json" <<'EOF'
+[
+  {
+    "modelId": "demo/gemma-GGUF",
+    "downloads": 12345,
+    "likes": 42,
+    "library_name": "gguf",
+    "tags": ["gguf"],
+    "siblings": [
+      {"rfilename": "gemma-Q4_K_M.gguf"},
+      {"rfilename": "gemma-Q8_0.gguf"}
+    ]
+  },
+  {
+    "modelId": "mlx-community/gemma-4bit",
+    "downloads": 5000,
+    "likes": 200,
+    "tags": ["mlx", "text-generation"],
+    "siblings": []
+  },
+  {
+    "modelId": "demo/gemma-both",
+    "downloads": 3000,
+    "likes": 90,
+    "tags": ["mlx", "gguf"],
+    "siblings": [
+      {"rfilename": "gemma-both-Q4_K_M.gguf"}
+    ]
+  },
+  {
+    "modelId": "org/transformers-only",
+    "downloads": 9999,
+    "likes": 400,
+    "library_name": "transformers",
+    "tags": ["transformers"],
+    "siblings": [{"rfilename": "model.safetensors"}]
+  }
+]
+EOF
+}
+
+test_combined_install_flow() {
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  # Mock arm64 so the combined path is taken.
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  # Create fixtures for macos-arm64 (forced by the mocked uname).
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1000' 'macos-arm64'
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1000' 'macos-arm64'
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1000'
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --no-shell-profile
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'combined install installs llama.cpp' "install failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ ! -f "${install_root}/llama-b1000/.install-complete" ]]; then
+    fail 'combined install installs llama.cpp' 'expected llama.cpp install marker to exist'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'uv not found'; then
+    fail 'combined install skips mlx gracefully when uv absent' \
+      "expected 'uv not found' notice for mlx skip, got stderr: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'combined install installs llama.cpp'
+  pass 'combined install skips mlx gracefully when uv absent'
+}
+
+test_combined_install_uses_homebrew_for_uv() {
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local brew_log="${TEST_DIR}/brew.log"
+  local uv_log="${TEST_DIR}/uv.log"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+  write_mock_brew "${TEST_DIR}/bin/brew"
+
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1000' 'macos-arm64'
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1000' 'macos-arm64'
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1000'
+
+  export CORRAL_BREW_LOG="$brew_log"
+  export CORRAL_UV_LOG="$uv_log"
+  export CORRAL_TEST_UV_PATH="${TEST_DIR}/bin/uv"
+
+  run_cmd_with_input 'y' "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --no-shell-profile
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'combined install uses Homebrew for uv bootstrap' "install failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ ! -f "${install_root}/llama-b1000/.install-complete" ]]; then
+    fail 'combined install still installs llama.cpp while bootstrapping uv' 'expected llama.cpp install marker to exist'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$brew_log")" 'install uv'; then
+    fail 'combined install uses Homebrew for uv bootstrap' "expected brew install uv call, got: $(cat "$brew_log")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$uv_log")" 'tool install mlx-lm'; then
+    fail 'combined install continues with mlx install after Homebrew uv' "expected uv tool install mlx-lm call, got: $(cat "$uv_log")"
+    return
+  fi
+
+  pass 'combined install uses Homebrew for uv bootstrap'
+  pass 'combined install still installs llama.cpp while bootstrapping uv'
+  pass 'combined install continues with mlx install after Homebrew uv'
+}
+
+test_combined_update_flow() {
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1000' 'macos-arm64'
+  create_fixture_tarball "$CORRAL_TEST_FIXTURES_DIR" 'b1001' 'macos-arm64'
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1000' 'macos-arm64'
+  write_release_json "$CORRAL_TEST_FIXTURES_DIR" 'b1001' 'macos-arm64'
+
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1000'
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" install --path "$install_root" --no-shell-profile
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'combined update flow' "initial install failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  write_latest_pointer "$CORRAL_TEST_STATE_DIR" 'b1001'
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" update --path "$install_root" --no-shell-profile
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'combined update flow' "update failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_eq "$(basename "$(readlink "${install_root}/current")")" 'llama-b1001'; then
+    fail 'combined update updates llama.cpp' 'expected current symlink to point at llama-b1001 after update'
+    return
+  fi
+
+  if ! assert_contains "$(cat "$stderr_file")" 'skipping MLX update'; then
+    fail 'combined update skips mlx gracefully when uv absent' \
+      "expected 'skipping MLX update' notice, got stderr: $(cat "$stderr_file")"
+    return
+  fi
+
+  pass 'combined update updates llama.cpp'
+  pass 'combined update skips mlx gracefully when uv absent'
+}
+
+test_combined_uninstall_flow() {
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  mkdir -p "${install_root}/llama-b1000"
+  ln -sfn "${install_root}/llama-b1000" "${install_root}/current"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" uninstall --path "$install_root" --force
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'combined uninstall removes llama.cpp' "uninstall failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ -d "$install_root" ]]; then
+    fail 'combined uninstall removes llama.cpp' 'expected install root to be removed'
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+  if ! assert_contains "$out" 'mlx-lm is not installed'; then
+    fail 'combined uninstall reports mlx not installed' \
+      "expected mlx not-installed notice, got: $out"
+    return
+  fi
+
+  pass 'combined uninstall removes llama.cpp'
+  pass 'combined uninstall reports mlx not installed'
+}
+
+test_combined_versions_flow() {
+  local install_root="${HOME}/install-root"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  mkdir -p "${install_root}/llama-b1000" "${install_root}/llama-b1001"
+  ln -sfn "${install_root}/llama-b1001" "${install_root}/current"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" versions --path "$install_root"
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'combined versions shows both sections' "versions failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'VERSION' || ! assert_contains "$out" 'STATUS'; then
+    fail 'combined versions shows llama.cpp section' "expected VERSION/STATUS headers, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'b1001' || ! assert_contains "$out" 'current'; then
+    fail 'combined versions shows llama.cpp section' "expected active version in output, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'mlx' || ! assert_contains "$out" 'not installed'; then
+    fail 'combined versions shows mlx section' "expected mlx not-installed in output, got: $out"
+    return
+  fi
+
+  pass 'combined versions shows llama.cpp section'
+  pass 'combined versions shows mlx section'
+}
+
+test_combined_search_flow() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+
+  write_hf_search_fixture_combined "$CORRAL_TEST_FIXTURES_DIR"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" search gemma
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'combined search shows TYPE column' "search failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  local out
+  out="$(cat "$stdout_file")"
+
+  if ! assert_contains "$out" 'TYPE'; then
+    fail 'combined search shows TYPE column' "expected TYPE column header, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'demo/gemma-GGUF'; then
+    fail 'combined search includes llama.cpp models' "expected GGUF model in output, got: $out"
+    return
+  fi
+
+  if ! assert_contains "$out" 'mlx-community/gemma-4bit'; then
+    fail 'combined search includes mlx models' "expected MLX model in output, got: $out"
+    return
+  fi
+
+  if assert_contains "$out" 'org/transformers-only'; then
+    fail 'combined search excludes non-gguf non-mlx models' "did not expect transformers-only model, got: $out"
+    return
+  fi
+
+  pass 'combined search shows TYPE column'
+  pass 'combined search includes llama.cpp models'
+  pass 'combined search includes mlx models'
+  pass 'combined search excludes non-gguf non-mlx models'
+}
+
 main() {
   command -v jq >/dev/null 2>&1 || {
     echo 'jq is required to run smoke tests.' >&2
@@ -2574,6 +4340,18 @@ main() {
 
   setup_test_env
   test_install_flow
+
+  setup_test_env
+  test_install_rewrites_stale_bash_path_block
+
+  setup_test_env
+  test_install_creates_bash_completion_loader_when_bashrc_missing
+
+  setup_test_env
+  test_install_creates_zsh_completion_loader
+
+  setup_test_env
+  test_install_zsh_completions_respect_zdotdir
 
   setup_test_env
   test_update_flow
@@ -2595,6 +4373,93 @@ main() {
 
   setup_test_env
   test_run_and_serve_forwarding
+
+  setup_test_env
+  test_mlx_install_uv_flow
+
+  setup_test_env
+  test_mlx_run_dispatches
+
+  setup_test_env
+  test_mlx_serve_dispatches
+
+  setup_test_env
+  test_mlx_run_with_profile
+
+  setup_test_env
+  test_mlx_run_profile_backend_sections
+
+  setup_test_env
+  test_mlx_serve_with_profile
+
+  setup_test_env
+  test_llama_run_profile_backend_sections
+
+  setup_test_env
+  test_profile_set_from_template_preserves_backend_sections
+
+  setup_test_env
+  test_template_set_preserves_backend_sections
+
+  setup_test_env
+  test_template_backend_sections_inherited_by_profile
+
+  setup_test_env
+  test_mlx_quant_spec_warns
+
+  setup_test_env
+  test_mlx_pull_dispatches_generate
+
+  setup_test_env
+  test_mlx_pull_quant_spec_warns
+
+  setup_test_env
+  test_mlx_list_shows_cached_models
+
+  setup_test_env
+  test_mlx_remove_deletes_cache
+
+  setup_test_env
+  test_mlx_remove_quant_warns_and_ignores
+
+  setup_test_env
+  test_mlx_remove_fails_when_model_in_use_by_server
+
+  setup_test_env
+  test_mlx_remove_fails_when_model_in_use_by_chat
+
+  setup_test_env
+  test_mlx_update_uses_uv_upgrade
+
+  setup_test_env
+  test_mlx_versions_reports_installed_version
+
+  setup_test_env
+  test_mlx_versions_fallbacks_to_uv_tool_list
+
+  setup_test_env
+  test_mlx_prune_is_noop
+
+  setup_test_env
+  test_mlx_uninstall_removes_tool
+
+  setup_test_env
+  test_mlx_unsupported_platform_errors
+
+  setup_test_env
+  test_status_shows_backend_and_platform
+
+  setup_test_env
+  test_status_combined_shows_both_backends
+
+  setup_test_env
+  test_list_llama_cpp_ignores_non_gguf_models
+
+  setup_test_env
+  test_mlx_list_discovers_cache
+
+  setup_test_env
+  test_list_default_includes_both_backends
 
   setup_test_env
   test_list_shows_quant_variants
@@ -2676,6 +4541,12 @@ main() {
 
   setup_test_env
   test_search_default_quant_tabular
+
+  setup_test_env
+  test_search_mlx_backend_filters_results
+
+  setup_test_env
+  test_search_mlx_quants_warns_and_ignores
 
   setup_test_env
   test_browse_opens_url
@@ -2763,6 +4634,24 @@ main() {
 
   setup_test_env
   test_template_user_overrides_builtin
+
+  setup_test_env
+  test_combined_install_flow
+
+  setup_test_env
+  test_combined_install_uses_homebrew_for_uv
+
+  setup_test_env
+  test_combined_update_flow
+
+  setup_test_env
+  test_combined_uninstall_flow
+
+  setup_test_env
+  test_combined_versions_flow
+
+  setup_test_env
+  test_combined_search_flow
 
   printf '\n'
   printf 'Passed: %s\n' "$PASS_COUNT"

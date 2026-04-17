@@ -1,11 +1,11 @@
-# Profile and template helpers for fold.
+# Profile and template helpers for corral.
 # shellcheck shell=bash
 
 # Return the resolved profiles directory (env override or default).
-# ${FOLD_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}: use the env var if set,
+# ${CORRAL_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}: use the env var if set,
 # otherwise fall back to the default. This pattern is used for all overridable dirs.
 _profiles_dir() {
-  local dir="${FOLD_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}"
+  local dir="${CORRAL_PROFILES_DIR:-$DEFAULT_PROFILES_DIR}"
   # ${dir/#\~/$HOME}: expand leading tilde (see ensure_llama_in_path).
   dir="${dir/#\~/$HOME}"
   printf '%s' "$dir"
@@ -19,7 +19,7 @@ _profile_path() {
 
 # Return the resolved templates directory (env override or default).
 _templates_dir() {
-  local dir="${FOLD_TEMPLATES_DIR:-$DEFAULT_TEMPLATES_DIR}"
+  local dir="${CORRAL_TEMPLATES_DIR:-$DEFAULT_TEMPLATES_DIR}"
   dir="${dir/#\~/$HOME}"
   printf '%s' "$dir"
 }
@@ -33,30 +33,17 @@ _template_path() {
 # Print the content of a built-in template, or return 1 if the name is unknown.
 _get_builtin_template_content() {
   local name="$1"
-  case "$name" in
-    chat)
-      printf '%s\n' \
-        '--temp 0.8' \
-        '--ctx-size 8192' \
-        '--flash-attn on' \
-        '-ngl 999'
-      ;;
-    code)
-      printf '%s\n' \
-        '--ctx-size 65536' \
-        '--n-predict 4096' \
-        '--temp 0.2' \
-        '--top-k 20' \
-        '--repeat-penalty 1.05' \
-        '--flash-attn on' \
-        '-ngl 999' \
-        '[serve]' \
-        '--cache-reuse 256'
-      ;;
-    *)
-      return 1
-      ;;
-  esac
+# BEGIN_BUILTIN_TEMPLATES
+  # In dev mode (sourced from src/), read template content from src/templates/.
+  # At build time, tools/build.sh replaces this block with inlined content.
+  local _tmpl_dir
+  _tmpl_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../templates"
+  if [[ -f "${_tmpl_dir}/${name}.conf" ]]; then
+    cat "${_tmpl_dir}/${name}.conf"
+    return 0
+  fi
+  return 1
+# END_BUILTIN_TEMPLATES
 }
 
 # Print the content of a template (user-defined takes precedence over built-in).
@@ -118,7 +105,18 @@ collect_profile_entries() {
 #   {template_name}|{type}|{default_model}
 # type is "built-in" or "user". default_model is "(none)" when absent.
 collect_template_entries() {
-  local -a builtin_names=( chat code )
+# BEGIN_BUILTIN_TEMPLATE_NAMES
+  # In dev mode, discover built-in template names from src/templates/.
+  # At build time, tools/build.sh replaces this block with a static list.
+  local -a builtin_names=()
+  local _btmpl_dir
+  _btmpl_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../templates"
+  local _btf
+  for _btf in "${_btmpl_dir}"/*.conf; do
+    [[ -f "$_btf" ]] || continue
+    builtin_names+=("$(basename "$_btf" .conf)")
+  done
+# END_BUILTIN_TEMPLATE_NAMES
   local bname
   for bname in "${builtin_names[@]}"; do
     printf '%s|%s|%s\n' "$bname" 'built-in' '(none)'
@@ -140,17 +138,29 @@ collect_template_entries() {
 }
 
 # Load a profile file.
-# Usage: _load_profile <name> [run|serve]
+# Usage: _load_profile <name> [run|serve] [mlx|llama.cpp]
 # Sets REPLY_PROFILE_MODEL and REPLY_PROFILE_ARGS (array).
 #
-# Profile files use an INI-like section model:
-#   - Lines before any [run] / [serve] header are common to both commands.
-#   - Lines under [run] are included only when mode is "run".
-#   - Lines under [serve] are included only when mode is "serve".
+# Profile files use an INI-like section model with two dimensions:
+#   command: run | serve
+#   backend: mlx | llama.cpp
+#
+# Section headers and their semantics:
+#   (no header)       — common to all commands and backends.
+#   [run]             — included only when mode is "run", any backend.
+#   [serve]           — included only when mode is "serve", any backend.
+#   [mlx]             — included for MLX backend, any command.
+#   [llama.cpp]       — included for llama.cpp backend, any command.
+#   [mlx.run]         — included only for MLX backend + "run" command.
+#   [mlx.serve]       — included only for MLX backend + "serve" command.
+#   [llama.cpp.run]   — included only for llama.cpp backend + "run" command.
+#   [llama.cpp.serve] — included only for llama.cpp backend + "serve" command.
+#
 # Each flag line holds one flag or a flag+value pair (e.g. "--ctx-size 8192").
 _load_profile() {
   local name="$1"
   local mode="${2:-}"
+  local backend="${3:-}"
   local path
   path="$(_profile_path "$name")"
   [[ -f "$path" ]] || die "profile '${name}' not found (${path})"
@@ -165,23 +175,70 @@ _load_profile() {
     line="${line%%*( )}"
     [[ -z "$line" || "$line" == '#'* ]] && continue
 
-    if [[ "$line" == '[run]' ]]; then section="run"; continue; fi
-    if [[ "$line" == '[serve]' ]]; then section="serve"; continue; fi
+    # Section headers.
+    case "$line" in
+      '[run]')             section="run";             continue ;;
+      '[serve]')           section="serve";           continue ;;
+      '[mlx]')             section="mlx";             continue ;;
+      '[llama.cpp]')       section="llama.cpp";       continue ;;
+      '[mlx.run]')         section="mlx.run";         continue ;;
+      '[mlx.serve]')       section="mlx.serve";       continue ;;
+      '[llama.cpp.run]')   section="llama.cpp.run";   continue ;;
+      '[llama.cpp.serve]') section="llama.cpp.serve"; continue ;;
+    esac
 
     if [[ "$line" == model=* ]]; then
       REPLY_PROFILE_MODEL="${line#model=}"
       continue
     fi
 
-    if [[ "$section" == "common" || -z "$mode" || "$section" == "$mode" ]]; then
-      # read -ra word-splits the line into an array so that multi-token
-      # lines like "--ctx-size 8192" become two separate array elements.
-      read -ra _flag_words <<< "$line"
-      REPLY_PROFILE_ARGS+=("${_flag_words[@]}")
+    # Skip flags from non-matching sections.
+    if ! _section_matches "$section" "$mode" "$backend"; then
+      continue
     fi
+
+    # read -ra word-splits the line into an array so that multi-token
+    # lines like "--ctx-size 8192" become two separate array elements.
+    read -ra _flag_words <<< "$line"
+    REPLY_PROFILE_ARGS+=("${_flag_words[@]}")
   done < "$path"
 
   [[ -n "$REPLY_PROFILE_MODEL" ]] || die "profile '${name}' has no 'model=' line"
+}
+
+# Return 0 if a section's flags should be included given the current
+# command mode and backend. Empty mode or backend matches everything.
+_section_matches() {
+  local section="$1"
+  local mode="$2"
+  local backend="$3"
+
+  case "$section" in
+    common)
+      return 0
+      ;;
+    run|serve)
+      # Command-only section: include if mode is empty (unscoped) or matches.
+      [[ -z "$mode" || "$section" == "$mode" ]]
+      ;;
+    mlx|llama.cpp)
+      # Backend-only section: include if backend is empty (unscoped) or matches.
+      [[ -z "$backend" || "$section" == "$backend" ]]
+      ;;
+    mlx.run|mlx.serve|llama.cpp.run|llama.cpp.serve)
+      # Backend+command section: both must match (or be empty).
+      # %.*: shortest suffix strip → "llama.cpp.run" → "llama.cpp"
+      # ##*.: greedy prefix strip → "llama.cpp.run" → "run"
+      local sec_backend="${section%.*}"
+      local sec_mode="${section##*.}"
+      [[ -z "$backend" || "$sec_backend" == "$backend" ]] && \
+        [[ -z "$mode" || "$sec_mode" == "$mode" ]]
+      ;;
+    *)
+      # Unknown section: skip silently for forward compatibility.
+      return 1
+      ;;
+  esac
 }
 
 cmd_profile_usage() {
@@ -205,21 +262,31 @@ Subcommands:
   duplicate <SOURCE> <DEST>
       Copy an existing profile to a new name.
 
-Profiles are stored in: \${FOLD_PROFILES_DIR:-~/.config/fold/profiles}
+Profiles are stored in: \${CORRAL_PROFILES_DIR:-~/.config/corral/profiles}
 Built-in templates available for 'profile set': chat, code
 
-Optional [run] and [serve] section headers in a profile file scope flags to
-only that command. Flags before any section header apply to both.
+The backend (llama.cpp or mlx) is inferred automatically from the model spec
+when running or serving a profile. No explicit backend declaration is needed.
+
+Section headers scope flags to a specific command, backend, or both:
+  [run]              Flags for 'run' only (any backend).
+  [serve]            Flags for 'serve' only (any backend).
+  [mlx]              Flags for MLX backend only (any command).
+  [llama.cpp]        Flags for llama.cpp backend only (any command).
+  [mlx.run]          Flags for MLX + run only.
+  [mlx.serve]        Flags for MLX + serve only.
+  [llama.cpp.run]    Flags for llama.cpp + run only.
+  [llama.cpp.serve]  Flags for llama.cpp + serve only.
+Flags before any section header apply to all commands and backends.
+
 Example profile file:
   model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
-  --ctx-size 65536
-  --n-predict 4096
   --temp 0.2
-  --top-k 20
-  --repeat-penalty 1.05
+  [llama.cpp]
+  --ctx-size 65536
   --flash-attn on
   -ngl 999
-  [serve]
+  [llama.cpp.serve]
   --cache-reuse 256
 
 Use a profile name instead of a model spec with 'run' or 'serve':
@@ -268,7 +335,7 @@ Subcommands:
   remove <TEMPLATE>
       Delete a user-defined template. Built-in templates cannot be removed.
 
-Templates are stored in: \${FOLD_TEMPLATES_DIR:-~/.config/fold/templates}
+Templates are stored in: \${CORRAL_TEMPLATES_DIR:-~/.config/corral/templates}
 Built-in templates: chat, code
 EOF
 }
@@ -380,7 +447,9 @@ _cmd_profile_set() {
   fi
 
   if [[ $# -gt 0 ]]; then
-    [[ "$1" == "--" ]] || die "expected '--' before flags, got: $1"
+    if [[ "$1" != "--" ]]; then
+      die "expected '-- <flags...>', got: $1"
+    fi
     shift
     extra_args=("$@")
   fi
@@ -483,7 +552,9 @@ _cmd_template_set() {
 
   local extra_args=()
   if [[ $# -gt 0 ]]; then
-    [[ "$1" == "--" ]] || die "expected '--' before flags, got: $1"
+    if [[ "$1" != "--" ]]; then
+      die "expected '-- <flags...>', got: $1"
+    fi
     shift
     extra_args=("$@")
   fi
