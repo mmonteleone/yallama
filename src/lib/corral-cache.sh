@@ -1,4 +1,4 @@
-# Cache and quant helpers for fold.
+# Cache and quant helpers for corral.
 # shellcheck shell=bash
 
 # Parse "user/model[:quant]" into globals REPLY_MODEL and REPLY_QUANT.
@@ -75,10 +75,11 @@ _find_cached_gguf_paths() {
 # lines that may contain spaces or special characters.
 _find_cached_gguf_files() {
   local cache_dir="$1"
-  _find_cached_gguf_paths "$cache_dir" | while IFS= read -r f; do
+  local f
+  while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     basename "$f"
-  done | sort -u
+  done < <(_find_cached_gguf_paths "$cache_dir") | sort -u
 }
 
 # Find cached GGUF filenames whose extracted quant tag matches the given tag.
@@ -87,15 +88,16 @@ _find_gguf_by_quant() {
   local cache_dir="$1"
   local quant="$2"
   local normalized_quant
+  local fname
   normalized_quant="$(normalize_quant_tag "$quant")"
-  _find_cached_gguf_files "$cache_dir" | while IFS= read -r fname; do
+  while IFS= read -r fname; do
     [[ -z "$fname" ]] && continue
     local tag
     tag="$(extract_quant_from_filename "$fname")"
     if [[ "$(normalize_quant_tag "$tag")" == "$normalized_quant" ]]; then
       printf '%s\n' "$fname"
     fi
-  done
+  done < <(_find_cached_gguf_files "$cache_dir")
 }
 
 # Find cached GGUF file paths whose extracted quant tag matches the given tag.
@@ -104,15 +106,16 @@ _find_cached_gguf_paths_by_quant() {
   local cache_dir="$1"
   local quant="$2"
   local normalized_quant
+  local path
   normalized_quant="$(normalize_quant_tag "$quant")"
-  _find_cached_gguf_paths "$cache_dir" | while IFS= read -r path; do
+  while IFS= read -r path; do
     [[ -z "$path" ]] && continue
     local tag
     tag="$(extract_quant_from_filename "$(basename "$path")")"
     if [[ "$(normalize_quant_tag "$tag")" == "$normalized_quant" ]]; then
       printf '%s\n' "$path"
     fi
-  done
+  done < <(_find_cached_gguf_paths "$cache_dir")
 }
 
 # Resolve a symlink to its absolute target path using a subshell cd, avoiding
@@ -191,6 +194,34 @@ cache_dir_to_model_name() {
   printf '%s\n' "${entry/--//}"
 }
 
+collect_mlx_model_entries() {
+  # MLX model visibility is derived from HF cache only; Corral keeps no
+  # sidecar registry.
+  if [[ -d "$HF_HUB_DIR" ]]; then
+    local dir
+    for dir in "$HF_HUB_DIR"/models--*/; do
+      [[ -d "$dir" ]] || continue
+      local model_name
+      model_name="$(cache_dir_to_model_name "$dir")"
+      case "$model_name" in
+        mlx-community/*)
+          local size
+          size="$(du -sh "$dir" 2>/dev/null | cut -f1)"
+          printf '%s||%s|mlx\n' "$model_name" "$size"
+          ;;
+      esac
+    done
+  fi
+}
+
+# Return success if a model cache directory contains at least one GGUF file.
+_cache_dir_has_gguf() {
+  local cache_dir="$1"
+  local gguf_files
+  gguf_files="$(_find_cached_gguf_files "$cache_dir")"
+  [[ -n "$gguf_files" ]]
+}
+
 # List the distinct quant tags present in a model's cache directory.
 # Extracts the quant tag from each GGUF filename and deduplicates.
 cached_quant_tags() {
@@ -227,8 +258,6 @@ cache_has_model_or_quant() {
 
 # Emit one line per installed quant variant in pipe-delimited format:
 #   {model_name}|{quant_tag}|{disk_size}
-# Models with no GGUF files (e.g. non-GGUF repos) emit:
-#   {model_name}||{disk_size}   (empty quant field)
 # This is the canonical data format consumed by cmd_list and cmd_remove.
 collect_cached_model_entries() {
   local dir
@@ -240,9 +269,7 @@ collect_cached_model_entries() {
     local gguf_files
     gguf_files="$(_find_cached_gguf_files "$dir")"
     if [[ -z "$gguf_files" ]]; then
-      local size
-      size="$(du -sh "$dir" 2>/dev/null | cut -f1)"
-      printf '%s||%s\n' "$model_name" "$size"
+      # llama.cpp list scope is GGUF-only.
       continue
     fi
 
@@ -267,7 +294,7 @@ collect_cached_model_entries() {
         size='?'
       fi
 
-      printf '%s|%s|%s\n' "$model_name" "$tag" "$size"
+      printf '%s|%s|%s|llama.cpp\n' "$model_name" "$tag" "$size"
     done < <(cached_quant_tags "$dir")
   done
 }
@@ -281,7 +308,7 @@ model_is_in_use() {
   # Find PIDs of running llama-cli and llama-server processes.
   # 'ps -eo pid=,comm=': list all processes with just PID and command name
   # (the trailing '=' suppresses the header line).
-  pids="$(ps -eo pid=,comm= 2>/dev/null | awk '$2 ~ /llama-(cli|server)$/ {print $1}')"
+  pids="$(ps -eo pid=,comm= 2>/dev/null | awk '$2 ~ /llama-(cli|server)$/ || $2 == "mlx_lm.server" {print $1}')"
   [[ -z "$pids" ]] && return 1
 
   if command -v lsof >/dev/null 2>&1; then
@@ -299,6 +326,45 @@ model_is_in_use() {
     done <<< "$pids"
     return 1
   fi
+}
+
+mlx_model_is_in_use() {
+  local model_name="$1"
+  ps -eo comm=,args= -ww 2>/dev/null | awk -v model="$model_name" '
+    {
+      proc = $1
+      is_mlx_proc = 0
+
+      if (proc == "mlx_lm.server" || proc == "mlx_lm.chat") {
+        is_mlx_proc = 1
+      } else {
+        for (i = 2; i <= NF; i++) {
+          if ($i ~ /^-/) {
+            break
+          }
+
+          token = $i
+          sub(/^.*\//, "", token)
+          if (token == "mlx_lm.server" || token == "mlx_lm.chat") {
+            is_mlx_proc = 1
+            break
+          }
+        }
+      }
+
+      if (!is_mlx_proc) {
+        next
+      }
+
+      for (i = 2; i <= NF; i++) {
+        if (($i == "--model" && i < NF && $(i + 1) == model) || $i == ("--model=" model)) {
+          found = 1
+          break
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  '
 }
 
 # Safety check before removing a specific quant: verify none of its files
@@ -328,16 +394,18 @@ quant_is_in_use() {
 
 cmd_list_usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME list [--quiet] [--json] [--models] [--profiles] [--templates]
-       $SCRIPT_NAME ls   [--quiet] [--json] [--models] [--profiles] [--templates]
+Usage: $SCRIPT_NAME list [--backend <mlx|llama.cpp>] [--quiet] [--json] [--models] [--profiles] [--templates]
+       $SCRIPT_NAME ls   [--backend <mlx|llama.cpp>] [--quiet] [--json] [--models] [--profiles] [--templates]
 
-Lists cached HuggingFace models, saved profiles, and templates.
+Lists backend-scoped cached models plus saved profiles and templates.
 
 When multiple entry types are included, output is grouped into separate
 sections. For GGUF models, each downloaded quant variant is shown as a
 separate row (e.g. user/model:Q4_K_M).
 
 Options:
+  --backend <backend>
+            Model listing backend scope: mlx or llama.cpp. Omit to include both.
   --models  Include only model entries.
   --profiles Include only profile entries.
   --templates Include only template entries.
@@ -347,6 +415,7 @@ EOF
 }
 
 cmd_list() {
+  local BACKEND_FLAG=""
   local QUIET="false"
   local JSON="false"
   local SHOW_MODELS="true"
@@ -356,6 +425,7 @@ cmd_list() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --backend) BACKEND_FLAG="${2:-}"; shift 2 ;;
       --quiet)   QUIET="true"; shift ;;
       --json)    JSON="true"; shift ;;
       --models)
@@ -393,16 +463,30 @@ cmd_list() {
     esac
   done
 
+  local BACKEND="all"
+  if [[ -n "$BACKEND_FLAG" ]]; then
+    BACKEND="$(resolve_backend "$BACKEND_FLAG")"
+  fi
+
   local model_entries=()
   local profile_entries=()
   local template_entries=()
   local entry
 
-  if [[ "$SHOW_MODELS" == "true" && -d "$HF_HUB_DIR" ]]; then
-    while IFS= read -r entry; do
-      [[ -z "$entry" ]] && continue
-      model_entries+=("$entry")
-    done < <(collect_cached_model_entries)
+  if [[ "$SHOW_MODELS" == "true" ]]; then
+    if [[ "$BACKEND" == "all" || "$BACKEND" == "mlx" ]]; then
+      while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        model_entries+=("$entry")
+      done < <(collect_mlx_model_entries)
+    fi
+
+    if [[ "$BACKEND" == "all" || "$BACKEND" == "llama.cpp" ]] && [[ -d "$HF_HUB_DIR" ]]; then
+      while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        model_entries+=("$entry")
+      done < <(collect_cached_model_entries)
+    fi
   fi
 
   if [[ "$SHOW_PROFILES" == "true" ]]; then
@@ -442,16 +526,19 @@ cmd_list() {
   fi
 
   if [[ "$JSON" == "true" ]]; then
+    require_cmds jq
     local json_lines=()
     local e
     if [[ "$model_count" -gt 0 ]]; then
       for e in "${model_entries[@]}"; do
-        local name quant size
+        local name quant size backend
         name="${e%%|*}"
         local rest="${e#*|}"
         quant="${rest%%|*}"
-        size="${rest#*|}"
-        json_lines+=("MODEL|${name}|${quant}|${size}")
+        rest="${rest#*|}"
+        size="${rest%%|*}"
+        backend="${rest#*|}"
+        json_lines+=("MODEL|${name}|${quant}|${size}|${backend}")
       done
     fi
     if [[ "$profile_count" -gt 0 ]]; then
@@ -477,7 +564,7 @@ cmd_list() {
       | jq -R '
           split("|")
           | if .[0] == "MODEL" then
-              {kind: .[0], name: .[1], quant: (if .[2] == "" then null else .[2] end), size: .[3]}
+              {kind: .[0], name: .[1], quant: (if .[2] == "" then null else .[2] end), size: .[3], backend: .[4]}
             elif .[0] == "PROFILE" then
               {kind: .[0], name: .[1], model: .[2]}
             else
@@ -520,50 +607,52 @@ cmd_list() {
     fi
   else
     if [[ "$model_count" -gt 0 ]]; then
-      printf '%-55s  %s\n' "MODEL" "SIZE"
-      printf '%-55s  %s\n' "-----" "----"
-      local e
-      for e in "${model_entries[@]}"; do
-        local name quant size display_name
-        name="${e%%|*}"
-        local rest="${e#*|}"
-        quant="${rest%%|*}"
-        size="${rest#*|}"
-        if [[ -n "$quant" ]]; then
-          display_name="${name}:${quant}"
-        else
-          display_name="$name"
-        fi
-        printf '%-55s  %s\n' "$display_name" "$size"
-      done
+      {
+        local e
+        for e in "${model_entries[@]}"; do
+          local name quant size backend display_name
+          name="${e%%|*}"
+          local rest="${e#*|}"
+          quant="${rest%%|*}"
+          rest="${rest#*|}"
+          size="${rest%%|*}"
+          backend="${rest#*|}"
+          if [[ -n "$quant" ]]; then
+            display_name="${name}:${quant}"
+          else
+            display_name="$name"
+          fi
+          printf '%s\t%s\t%s\n' "$display_name" "$backend" "$size"
+        done
+      } | _print_tsv_table 'lll' $'MODEL\tBACKEND\tSIZE'
     fi
 
     if [[ "$profile_count" -gt 0 ]]; then
       [[ "$model_count" -gt 0 ]] && echo
-      printf '%-20s  %s\n' "PROFILE" "MODEL"
-      printf '%-20s  %s\n' "-------" "-----"
-      local e
-      for e in "${profile_entries[@]}"; do
-        local pname pmodel
-        pname="${e%%|*}"
-        pmodel="${e#*|}"
-        printf '%-20s  %s\n' "$pname" "$pmodel"
-      done
+      {
+        local e
+        for e in "${profile_entries[@]}"; do
+          local pname pmodel
+          pname="${e%%|*}"
+          pmodel="${e#*|}"
+          printf '%s\t%s\n' "$pname" "$pmodel"
+        done
+      } | _print_tsv_table 'll' $'PROFILE\tMODEL'
     fi
 
     if [[ "$template_count" -gt 0 ]]; then
       [[ "$model_count" -gt 0 || "$profile_count" -gt 0 ]] && echo
-      printf '%-20s  %-10s  %s\n' "TEMPLATE" "TYPE" "DEFAULT MODEL"
-      printf '%-20s  %-10s  %s\n' "--------" "----" "-------------"
-      local e
-      for e in "${template_entries[@]}"; do
-        local tname ttype tmodel
-        tname="${e%%|*}"
-        local trest="${e#*|}"
-        ttype="${trest%%|*}"
-        tmodel="${trest#*|}"
-        printf '%-20s  %-10s  %s\n' "$tname" "$ttype" "$tmodel"
-      done
+      {
+        local e
+        for e in "${template_entries[@]}"; do
+          local tname ttype tmodel
+          tname="${e%%|*}"
+          local trest="${e#*|}"
+          ttype="${trest%%|*}"
+          tmodel="${trest#*|}"
+          printf '%s\t%s\t%s\n' "$tname" "$ttype" "$tmodel"
+        done
+      } | _print_tsv_table 'lll' $'TEMPLATE\tTYPE\tDEFAULT MODEL'
     fi
   fi
 }
@@ -572,8 +661,8 @@ cmd_list() {
 
 cmd_remove_usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME remove <MODEL_NAME>[:<QUANT>] [--force]
-       $SCRIPT_NAME rm <MODEL_NAME>[:<QUANT>] [--force]
+Usage: $SCRIPT_NAME remove [--backend <mlx|llama.cpp>] <MODEL_NAME>[:<QUANT>] [--force]
+  $SCRIPT_NAME rm [--backend <mlx|llama.cpp>] <MODEL_NAME>[:<QUANT>] [--force]
        $SCRIPT_NAME remove <PROFILE_NAME>
        $SCRIPT_NAME rm <PROFILE_NAME>
 
@@ -589,13 +678,18 @@ Passing a profile name removes that saved profile.
 Deletes the locally cached model or quant variant. Refuses if the model is
 currently in use by llama-cli or llama-server.
 
+Model and quant removal applies to GGUF cache entries used by llama.cpp workflows.
+With --backend mlx, quant suffixes are ignored and removal targets MLX model state.
+
 Options:
+  --backend <backend>
+                Removal backend scope for model targets: mlx or llama.cpp (default: platform-detected).
   --force       Skip the confirmation prompt.
 EOF
 }
 
 cmd_remove() {
-  # Idiomatic help/no-args guard used throughout fold:
+  # Idiomatic help/no-args guard used throughout corral:
   # With no args: print usage to stderr and return 1 (error).
   # With -h/--help: print usage to stdout and return 0 (success).
   if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
@@ -603,17 +697,35 @@ cmd_remove() {
     [[ $# -eq 0 ]] && return 1 || return 0
   fi
 
-  local target_spec="$1"
+  local BACKEND_FLAG=""
+  local target_spec=""
   local force="false"
-  shift
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --backend)
+        BACKEND_FLAG="${2:-}"
+        shift 2
+        ;;
       --force)   force="true"; shift ;;
       -h|--help) cmd_remove_usage; return 0 ;;
-      *)         echo "Unknown argument: $1" >&2; cmd_remove_usage >&2; return 1 ;;
+      *)
+        if [[ -z "$target_spec" ]]; then
+          target_spec="$1"
+          shift
+        else
+          echo "Unknown argument: $1" >&2
+          cmd_remove_usage >&2
+          return 1
+        fi
+        ;;
     esac
   done
+
+  if [[ -z "$target_spec" ]]; then
+    cmd_remove_usage >&2
+    return 1
+  fi
 
   # If TARGET has no model slash/quant suffix and matches an existing profile,
   # treat this as profile deletion for parity with model removal.
@@ -624,6 +736,14 @@ cmd_remove() {
       remove_profile_by_name "$target_spec"
       return 0
     fi
+  fi
+
+  local BACKEND
+  BACKEND="$(resolve_backend "$BACKEND_FLAG")"
+
+  if [[ "$BACKEND" == "mlx" ]]; then
+    _remove_mlx_target "$target_spec" "$force"
+    return 0
   fi
 
   local model_name quant
@@ -694,4 +814,38 @@ cmd_remove() {
     rm -rf "$cache_dir"
     echo "Done."
   fi
+}
+
+_remove_mlx_target() {
+  local target_spec="$1"
+  local force="$2"
+
+  local model_name
+  _parse_model_spec "$target_spec"
+  model_name="$REPLY_MODEL"
+
+  if [[ -n "$REPLY_QUANT" ]]; then
+    echo "Warning: MLX backend does not use quant specifiers; ignoring ':${REPLY_QUANT}'." >&2
+  fi
+
+  if [[ "$model_name" != */* ]]; then
+    die "profiles are not supported with the MLX backend. Use a HuggingFace model id (USER/MODEL) or --backend llama.cpp."
+  fi
+
+  if mlx_model_is_in_use "$model_name"; then
+    die "cannot remove '${model_name}': it is currently in use by mlx_lm.chat or mlx_lm.server."
+  fi
+
+  local cache_dir
+  cache_dir="$(model_name_to_cache_dir "$model_name")"
+  if [[ ! -d "$cache_dir" ]]; then
+    die "model not found: ${model_name}"
+  fi
+
+  confirm_destructive_action "removing MLX model '${model_name}'" "$force" || return 1
+
+  echo "Removing model cache: $cache_dir"
+  rm -rf "$cache_dir"
+
+  echo "Removed MLX model: $model_name"
 }

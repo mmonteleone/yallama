@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared test harness for fold tests.
+# Shared test harness for corral tests.
 # Source this file from individual test scripts.
 
 set -euo pipefail
@@ -7,7 +7,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[1]}")/.." && pwd)"
 # SCRIPT_PATH and RUN_STATUS are read by the scripts that source this file.
 # shellcheck disable=SC2034
-SCRIPT_PATH="${ROOT_DIR}/src/fold.sh"
+SCRIPT_PATH="${ROOT_DIR}/src/corral.sh"
 TEST_ROOT="$(mktemp -d)"
 
 PASS_COUNT=0
@@ -75,24 +75,24 @@ run_cmd() {
   set -e
 }
 
-# Source the fold modules into the current shell for unit testing.
+# Source the corral modules into the current shell for unit testing.
 # Sets up required global variables and sources all lib modules.
-source_fold_libs() {
-  SCRIPT_NAME="fold"
+source_corral_libs() {
+  SCRIPT_NAME="corral"
   DEFAULT_INSTALL_ROOT="${HOME}/.llama.cpp"
-  DEFAULT_PROFILES_DIR="${HOME}/.config/fold/profiles"
-  DEFAULT_TEMPLATES_DIR="${HOME}/.config/fold/templates"
+  DEFAULT_PROFILES_DIR="${HOME}/.config/corral/profiles"
+  DEFAULT_TEMPLATES_DIR="${HOME}/.config/corral/templates"
   HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
   SHELL_PROFILE_EDIT_DECISION=""
-  # shellcheck disable=SC2034  # FOLD_VERSION is read by the sourced lib modules
-  FOLD_VERSION="dev"
+  # shellcheck disable=SC2034  # CORRAL_VERSION is read by the sourced lib modules
+  CORRAL_VERSION="dev"
 
-  source "${ROOT_DIR}/src/lib/fold-helpers.sh"
-  source "${ROOT_DIR}/src/lib/fold-cache.sh"
-  source "${ROOT_DIR}/src/lib/fold-profiles.sh"
-  source "${ROOT_DIR}/src/lib/fold-runtime.sh"
-  source "${ROOT_DIR}/src/lib/fold-search.sh"
-  source "${ROOT_DIR}/src/lib/fold-completions.sh"
+  source "${ROOT_DIR}/src/lib/corral-helpers.sh"
+  source "${ROOT_DIR}/src/lib/corral-cache.sh"
+  source "${ROOT_DIR}/src/lib/corral-profiles.sh"
+  source "${ROOT_DIR}/src/lib/corral-runtime.sh"
+  source "${ROOT_DIR}/src/lib/corral-search.sh"
+  source "${ROOT_DIR}/src/lib/corral-completions.sh"
 }
 
 report_results() {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# fold: Ollama-shaped llama.cpp and model management helper
-# https://github.com/mmonteleone/fold
+# corral: Ollama-shaped llama.cpp and model management helper
+# https://github.com/mmonteleone/corral
 
 # MIT License
 
@@ -36,14 +36,15 @@ set -euo pipefail
 # rather than the name of the symlink used to call it.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="${SCRIPT_NAME%.sh}"
 # These globals are read by the sourced lib modules; shellcheck can't see
 # cross-source usage, so suppress the false "unused" warnings here.
 # shellcheck disable=SC2034
 DEFAULT_INSTALL_ROOT="${HOME}/.llama.cpp"
 # shellcheck disable=SC2034
-DEFAULT_PROFILES_DIR="${HOME}/.config/fold/profiles"
+DEFAULT_PROFILES_DIR="${HOME}/.config/corral/profiles"
 # shellcheck disable=SC2034
-DEFAULT_TEMPLATES_DIR="${HOME}/.config/fold/templates"
+DEFAULT_TEMPLATES_DIR="${HOME}/.config/corral/templates"
 # shellcheck disable=SC2034
 HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
 # In-process cache for the shell profile edit permission decision.
@@ -53,24 +54,24 @@ HF_HUB_DIR="${HOME}/.cache/huggingface/hub"
 SHELL_PROFILE_EDIT_DECISION=""
 # @VERSION@ is replaced with the git tag by tools/build.sh at build time.
 # When running directly from source (dev mode), this placeholder is preserved.
-FOLD_VERSION="@VERSION@"
+CORRAL_VERSION="@VERSION@"
 
 # Source all library modules. When building a standalone script,
 # tools/build.sh replaces the region between the BEGIN/END markers
 # with the inlined content of each file.
 # BEGIN_GENERATED_MODULES
-# shellcheck source=src/lib/fold-helpers.sh
-source "${SCRIPT_DIR}/lib/fold-helpers.sh"
-# shellcheck source=src/lib/fold-cache.sh
-source "${SCRIPT_DIR}/lib/fold-cache.sh"
-# shellcheck source=src/lib/fold-profiles.sh
-source "${SCRIPT_DIR}/lib/fold-profiles.sh"
-# shellcheck source=src/lib/fold-runtime.sh
-source "${SCRIPT_DIR}/lib/fold-runtime.sh"
-# shellcheck source=src/lib/fold-search.sh
-source "${SCRIPT_DIR}/lib/fold-search.sh"
-# shellcheck source=src/lib/fold-completions.sh
-source "${SCRIPT_DIR}/lib/fold-completions.sh"
+# shellcheck source=src/lib/corral-helpers.sh
+source "${SCRIPT_DIR}/lib/corral-helpers.sh"
+# shellcheck source=src/lib/corral-cache.sh
+source "${SCRIPT_DIR}/lib/corral-cache.sh"
+# shellcheck source=src/lib/corral-profiles.sh
+source "${SCRIPT_DIR}/lib/corral-profiles.sh"
+# shellcheck source=src/lib/corral-runtime.sh
+source "${SCRIPT_DIR}/lib/corral-runtime.sh"
+# shellcheck source=src/lib/corral-search.sh
+source "${SCRIPT_DIR}/lib/corral-search.sh"
+# shellcheck source=src/lib/corral-completions.sh
+source "${SCRIPT_DIR}/lib/corral-completions.sh"
 # END_GENERATED_MODULES
 
 # ── help ──────────────────────────────────────────────────────────────────────
@@ -80,30 +81,30 @@ cmd_help() {
 Usage: $SCRIPT_NAME <command> [options]
 
 Commands:
-  install              Install llama.cpp
-  update               Update llama.cpp to the latest release
-  versions             List all installed llama.cpp versions
-  prune                Remove old llama.cpp versions, keeping current
-  uninstall            Uninstall llama.cpp
-  status               Show installed and latest available version
-  search <QUERY>       Search HuggingFace for compatible GGUF models
+  install              Install inference backend (mlx or llama.cpp; default: platform-detected)
+  update               Update backend components (llama.cpp release or mlx-lm package)
+  versions             Show installed backend versions
+  prune                Prune old llama.cpp installs (keeps current version)
+  uninstall            Uninstall backend components and optional caches
+  status               Show installed backend, platform, and version info
+  search <QUERY>       Search backend-compatible models (GGUF for llama.cpp, MLX-friendly for mlx)
   browse <MODEL_NAME>  Open a model's HuggingFace page in your browser
-  pull <MODEL_NAME>    Download a HuggingFace model without running it
-  list (ls)            List downloaded models, profiles, and templates
-  remove (rm)          Remove a downloaded model/quant or a saved profile
-  run <MODEL_NAME>     Download and run a HuggingFace model
-  serve <MODEL_NAME>   Download and serve a HuggingFace model
-  ps                   Show running llama-cli / llama-server processes
+  pull <MODEL_NAME>    Download (prefetch) model artifacts without running
+  list (ls)            List backend-scoped model cache entries plus profiles and templates
+  remove (rm)          Remove backend-scoped model cache entries or a saved profile
+  run <MODEL_NAME>     Download and run a HuggingFace model (mlx or llama.cpp)
+  serve <MODEL_NAME>   Download and serve a HuggingFace model (mlx or llama.cpp)
+  ps                   Show running llama-cli / llama-server / mlx_lm.server processes
   profile              Manage named run/serve profiles
   template             Manage templates
-  version (--version)  Show fold version
+  version (--version)  Show corral version
   help (h, ?)          Show this help
 
 Environment:
-  FOLD_INSTALL_ROOT   Override the default installation root (~/.llama.cpp).
+  CORRAL_INSTALL_ROOT   Override the default installation root (~/.llama.cpp).
                          Applies to: run, serve, pull.
-  FOLD_PROFILES_DIR   Override the default profiles directory (~/.config/fold/profiles).
-  FOLD_TEMPLATES_DIR  Override the default user templates directory (~/.config/fold/templates).
+  CORRAL_PROFILES_DIR   Override the default profiles directory (~/.config/corral/profiles).
+  CORRAL_TEMPLATES_DIR  Override the default user templates directory (~/.config/corral/templates).
   HF_TOKEN               HuggingFace access token for private or gated models.
                          Also checked: HF_HUB_TOKEN, HUGGING_FACE_HUB_TOKEN.
 
@@ -120,7 +121,7 @@ shift || true
 
 case "$COMMAND" in
   help|h|\?)   cmd_help ;;
-  version|--version|-v) printf '%s %s\n' "$SCRIPT_NAME" "$FOLD_VERSION" ;;
+  version|--version|-v) printf '%s %s\n' "$SCRIPT_NAME" "$CORRAL_VERSION" ;;
   install)     cmd_install "$@" ;;
   update)      cmd_update "$@" ;;
   uninstall)   cmd_uninstall "$@" ;;

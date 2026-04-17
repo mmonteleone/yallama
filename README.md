@@ -1,19 +1,23 @@
-# Fold 🦙
+# Corral ✨🦙
 
-Run local models with the ease of [Ollama](https://ollama.com) and the power of official [llama.cpp](https://github.com/ggml-org/llama.cpp) releases with full [Hugging Face GGUF](https://huggingface.co/models?library=gguf&sort=trending) model access.
+Run local models with the ease of [Ollama](https://ollama.com) and full power of official [llama.cpp](https://github.com/ggml-org/llama.cpp) releases and [MLX](https://github.com/ml-explore/mlx-lm) on Apple Silicon.
 
-Fold is just a shell script. It installs official llama.cpp releases, uses the standard Hugging Face cache, and provides an Ollama-style CLI for running and managing local models: *search*, *pull*, *run*, *serve*, *list*, *remove*, *update*, etc. along with templated usage profile helpers.
+**Corral is just a shell script**. It installs and updates official latest llama.cpp and MLX releases, uses the standard Hugging Face registry for models, and provides an Ollama-style CLI for running and managing local models: *search*, *pull*, *run*, *serve*, *list*, *remove*, *update*, etc. along with templated usage profile helpers.
 
-## Why use it?
+```sh
+corral search gemma
+corral run unsloth/gemma-4-26B-A4B-it-GGUF
+```
 
-- Upstream, official llama.cpp — all its performance benefits and model support (*ahem*, [Gemma 4](https://deepmind.google/models/gemma/gemma-4/)) vs downstream integrations and forks
+## Why Corral?
+
+- Upstream, official llama.cpp and MLX builds, with their latest performance benefits and model support (*ahem*, [Gemma 4](https://deepmind.google/models/gemma/gemma-4/)) vs downstream integrations and forks
 - Ollama-style ergonomics for running *and* managing local models, without an always-on daemon
 - The full Hugging Face model registry, not just what Ollama ships
-- Built-in chat UI and OpenAI-compatible API endpoint via `llama-server`
 - Model search and discovery against Hugging Face from the command line
 - Saved, templated, profiles for pinning a model with a specific set of flags
 - Command, model, profile, and quant shell completions for fish, zsh, and bash
-- Standard HF cache — downloaded models are visible to other tools
+- Standard HF cache. Downloaded models are visible to other tools
 
 ## Does the world really need this?
 
@@ -21,267 +25,238 @@ Not really.
 
 ## Install
 
-Download the script system-wide:
-
 ```sh
-sudo curl -fsSL https://github.com/mmonteleone/fold/releases/latest/download/fold -o /usr/local/bin/fold && sudo chmod +x /usr/local/bin/fold
-```
+# System-wide
+sudo curl -fsSL https://github.com/mmonteleone/corral/releases/latest/download/corral \
+  -o /usr/local/bin/corral && sudo chmod +x /usr/local/bin/corral
 
-Or user-local (no `sudo`):
-
-```sh
-curl -fsSL https://github.com/mmonteleone/fold/releases/latest/download/fold -o ~/.local/bin/fold && chmod +x ~/.local/bin/fold
+# Or user-local (no sudo)
+curl -fsSL https://github.com/mmonteleone/corral/releases/latest/download/corral \
+  -o ~/.local/bin/corral && chmod +x ~/.local/bin/corral
 ```
 
 > [!NOTE]
-> `~/.local/bin` may not be in your `$PATH` by default on macOS. If `fold` isn't found after installing, add it: `export PATH="$HOME/.local/bin:$PATH"` in your shell profile.
+> `~/.local/bin` may not be in `$PATH` by default on macOS. Add it: `export PATH="$HOME/.local/bin:$PATH"`
 
-Then install llama.cpp and set up shell completions:
+Then install a backend and set up shell completions:
 
 ```sh
-fold install
+corral install
 ```
 
-`fold install` downloads the latest llama.cpp release and — after prompting — adds it to your `$PATH` and installs shell completions for your current shell. Pass `--shell-profile` to skip the prompt and allow edits automatically, or `--no-shell-profile` to skip profile edits entirely.
+On Apple Silicon this installs **both** llama.cpp (`llama-cli`, `llama-server`) and MLX (`mlx-lm`). On other platforms, llama.cpp only. Restrict with `--backend llama.cpp` or `--backend mlx`.
+
+`corral install` downloads the latest official llama.cpp release and, after prompting, adds it to `$PATH` and installs shell completions. Pass `--shell-profile` to accept automatically, or `--no-shell-profile` to skip. For MLX, corral installs `mlx-lm` via `uv` (offering to install `uv` via Homebrew if needed).
 
 ## Quick start
 
 ```sh
-# Find a model
-fold search gemma
+corral search gemma                           # Find models on Hugging Face
+corral run unsloth/gemma-4-26B-A4B-it-GGUF    # Chat (downloads on first use)
+corral run mlx-community/gemma-4-26b-a4b-it-6bit  # MLX model (auto-detected)
+corral serve unsloth/gemma-4-26B-A4B-it-GGUF  # OpenAI-compatible API + web UI
 
-# Chat with a model (downloads on first use)
-fold run unsloth/gemma-4-26B-A4B-it-GGUF
+corral run unsloth/gemma-4-26B-A4B-it-GGUF -- -ngl 999 -c 8192  # Extra flags
 
-# Serve as an OpenAI-compatible API + web UI at http://localhost:8080
-fold serve unsloth/gemma-4-26B-A4B-it-GGUF
-
-# Pass extra llama.cpp flags after '--'
-fold run unsloth/gemma-4-26B-A4B-it-GGUF -- -ngl 999 -c 8192
-
-# Save a profile — name + model + flags
-fold profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
+# Profiles: save a name + model + flags combo
+corral profile set coder unsloth/gemma-4-26B-A4B-it-GGUF -- \
   --ctx-size 65536 --temp 0.2 -ngl 999
+corral run coder
 
-# Use it anywhere you'd use a model name
-fold run coder
+# Or seed a profile from a built-in template
+corral profile set mycoder code unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+corral run mycoder
 
-# Or create one from a built-in template
-fold profile set mycoder code unsloth/Qwen3.5-27B-GGUF
-
-# List everything: models, profiles, templates
-fold list
-
-# Remove a model or profile
-fold remove unsloth/gemma-4-26B-A4B-it-GGUF
-fold remove coder
+corral list                                  # Models, profiles, templates
+corral remove unsloth/gemma-4-26B-A4B-it-GGUF
+corral remove coder
 ```
 
 ## Commands
 
-| Command | What it does |
+| Command | Description |
 |---|---|
-| `install` | Install llama.cpp, set up `$PATH` and shell completions |
-| `run <MODEL[:QUANT]\|PROFILE>` | Download model if needed, start chat via `llama-cli` |
-| `serve <MODEL[:QUANT]\|PROFILE>` | Download model if needed, start API server via `llama-server` |
-| `pull <MODEL[:QUANT]>` | Download a model (or specific quant) without running it |
-| `search <QUERY>` | Search Hugging Face for GGUF models |
-| `browse <MODEL>` | Open a model's Hugging Face page in the browser |
-| `list` / `ls` | List downloaded models, profiles, and templates |
-| `remove` / `rm` | Delete a model, quant variant, or profile |
-| `profile set` | Create or replace a profile (from a model or template) |
-| `profile show` | Print a profile's contents |
-| `profile duplicate` | Copy a profile to a new name |
-| `template show` | Print a template's contents |
-| `template set` | Create or replace a user-defined template |
-| `template remove` | Delete a user-defined template |
-| `status` | Show installed version and check for updates |
-| `update` | Update llama.cpp to the latest release |
-| `versions` | List installed llama.cpp versions |
-| `prune` | Remove old versions, keep current |
-| `uninstall` | Remove the llama.cpp install |
-| `ps` | Show running models |
-| `version` | Show the fold version |
+| `install` | Install backend(s) and shell completions |
+| `run MODEL\|PROFILE` | Interactive chat (`llama-cli` / `mlx_lm.chat`) |
+| `serve MODEL\|PROFILE` | OpenAI-compatible server (`llama-server` / `mlx_lm.server`) |
+| `pull MODEL` | Download model artifacts without running |
+| `search QUERY` | Search Hugging Face for compatible models |
+| `browse MODEL` | Open a model's Hugging Face page in the browser |
+| `list` / `ls` | List cached models, profiles, and templates |
+| `remove` / `rm` | Remove cached models or profiles |
+| `profile set\|show\|duplicate` | Manage saved profiles |
+| `template show\|set\|remove` | Manage flag templates |
+| `status` | Platform info and installed backend status |
+| `update` | Update backends to latest versions |
+| `versions` | Show installed backend versions |
+| `prune` | Remove old llama.cpp installs (keeps current) |
+| `uninstall` | Remove backends and optionally clean up caches |
+| `ps` | Show running model processes |
+| `version` | Show the corral version |
 
-Run `fold <command> --help` for per-command flags and usage.
-
-## Shell completions
-
-Completions for commands, model names, quant variants, and profile names are available for fish, zsh, and bash. They are installed automatically when `fold install` edits your shell profile. If you skipped shell profile edits during `fold install`, re-run it with `--shell-profile` to enable them:
-
-```sh
-fold install --shell-profile
-```
-
-## Model search
-
-```sh
-fold search gemma                        # keyword search, sorted by trending
-fold search qwen --quants                # show available quant variants
-fold search llama --sort downloads --limit 10
-fold search mistral --json               # machine-readable
-fold search mistral --quiet              # one model ID per line
-fold browse unsloth/gemma-4-26B-A4B-it-GGUF        # open in browser
-```
+Run `corral <command> --help` for per-command flags.
 
 ## Models and quants
 
-Use the standard Hugging Face `USER/MODEL` format, optionally with `:QUANT`:
+Models use standard Hugging Face `USER/MODEL` IDs. For llama.cpp, append `:QUANT` to pin a quantization:
 
 ```sh
-fold run unsloth/gemma-4-26B-A4B-it-GGUF            # default quant
-fold run unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K    # specific quant
+corral run unsloth/gemma-4-26B-A4B-it-GGUF            # default quant
+corral run unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K    # specific quant
 ```
 
-`fold list` shows downloaded models, profiles, and templates in separate sections. Scope the output with `--models`, `--profiles`, or `--templates`:
+MLX models use plain IDs without `:QUANT` (e.g. `mlx-community/gemma-4-26b-a4b-it-6bit`).
+
+All models are stored in the standard Hugging Face cache (`~/.cache/huggingface/hub/`).
+
+### Search
 
 ```sh
-fold list                   # all sections
-fold ls --quiet             # machine-friendly, one entry per line
-fold ls --json              # JSON array with a "kind" field
-fold ls --models            # only downloaded models
+corral search gemma                                    # trending (default)
+corral search qwen --quants                            # show quant variants
+corral search llama --sort downloads --limit 10
+corral search mistral --json                           # machine-readable
+corral search mistral --quiet                          # one ID per line
+corral search --backend mlx qwen                       # MLX-only models
 ```
 
-`fold remove USER/MODEL:QUANT` removes a single quant variant; omit `:QUANT` to remove the whole model. `fold remove PROFILE_NAME` removes a profile.
+### List and remove
 
-Models are stored in the standard Hugging Face cache (`~/.cache/huggingface/hub/`).
+```sh
+corral list                     # all models, profiles, templates
+corral ls --models              # only models
+corral ls --backend mlx         # only MLX models
+corral ls --json                # JSON output
+corral remove USER/MODEL:QUANT  # remove one quant (llama.cpp)
+corral remove USER/MODEL        # remove entire model
+corral remove PROFILE_NAME      # remove a profile
+```
 
 ## Profiles and templates
 
-A **profile** is a named model + flags combination you can use anywhere a model name is accepted:
+A **profile** saves a model + flags under a name, usable anywhere a model is accepted:
 
 ```sh
-# Create a profile from a model spec and flags
-fold profile set coder unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL -- \
+corral profile set coder unsloth/gemma-4-26B-A4B-it-GGUF -- \
   --ctx-size 65536 --temp 0.2 -ngl 999
 
-# Use it with run or serve
-fold run coder
-fold serve coder
-fold run coder -- --temp 0.5   # extra flags override profile flags
+corral run coder
+corral serve coder
+corral run coder -- --temp 0.5   # inline flags override profile flags
 ```
 
-A **template** is a reusable set of flags that can seed profiles. Fold ships two built-in templates:
+A **template** is a reusable set of flags that can seed profiles. Corral ships two:
 
-| Template | Use case | Key flags |
+| Template | Purpose | Key flags |
 |---|---|---|
-| `chat` | Conversational | `--temp 0.8 --ctx-size 8192` |
-| `code` | Coding | `--temp 0.2 --ctx-size 65536` |
-
-Create a profile from a template:
+| `chat` | Conversational | `--temp 0.8` |
+| `code` | Coding | `--temp 0.2` |
 
 ```sh
-fold profile set mycoder code unsloth/Qwen3.5-27B-GGUF
-fold run mycoder
+corral profile set mycoder code unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M   # from template
+corral run mycoder
 ```
 
-Create your own templates with `template set`. If a template includes a `model=` line, the model argument is optional when creating profiles from it:
+Create custom templates with `corral template set`. If a template includes a `model=` line, the model is optional when creating profiles from it:
 
 ```sh
-# Create a team template with a pinned model
-fold template set work-chat user/our-llm:Q4_K -- --temp 0.6 --ctx-size 16384
-
-# Create profiles from it — model comes from the template
-fold profile set alice-chat work-chat
-fold profile set bob-chat work-chat
-
-# Override the model for one profile
-fold profile set test-chat work-chat user/new-llm:Q4_K
+corral template set work-chat user/our-llm:Q4_K -- --temp 0.6 --ctx-size 16384
+corral profile set alice-chat work-chat          # model comes from template
+corral profile set test-chat work-chat user/new-llm:Q4_K  # override model
 ```
 
-Other profile and template commands:
-
 ```sh
-fold profile show coder          # print a profile's contents
-fold profile duplicate coder coder2
-fold template show code          # print a template's contents
-fold template remove work-chat   # delete a user-defined template
-fold remove coder                # delete a profile
+corral profile show coder            # inspect
+corral profile duplicate coder coder2
+corral template show code
+corral template remove work-chat     # delete user template
 ```
 
 ### Profile file format
 
-Profiles are plain text files in `~/.config/fold/profiles/`. Each has a `model=` line followed by flags, one per line:
+Profiles are plain text in `~/.config/corral/profiles/` with a `model=` line and flags (one per line). Section headers scope flags to a backend, command, or both:
 
 ```
-model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
---ctx-size 65536
+model=unsloth/gemma-4-26B-A4B-it-GGUF
 --temp 0.2
--ngl 999
-```
 
-Use `[run]` and `[serve]` section headers to scope flags to a specific command. Flags before any header apply to both:
+[mlx]
+--max-tokens 4096
 
-```
-model=unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q6_K_XL
+[mlx.serve]
+--top-k 20
+
+[llama.cpp]
+--top-k 20
+--repeat-penalty 1.05
 --ctx-size 65536
---temp 0.2
+--n-predict 4096
+--flash-attn on
 -ngl 999
 
-[serve]
+[llama.cpp.serve]
 --cache-reuse 256
+
 ```
 
-Section headers are added by editing the file directly; `profile set` creates flat (no-section) profiles.
+| Section | Scope |
+|---|---|
+| *(none)* | All backends and commands |
+| `[run]` / `[serve]` | One command, any backend |
+| `[llama.cpp]` / `[mlx]` | One backend, any command |
+| `[llama.cpp.run]` / `[llama.cpp.serve]` / `[mlx.run]` / `[mlx.serve]` | One backend + one command |
 
-Templates use the same format (`model=` is optional) and are stored in `~/.config/fold/templates/`. Built-in templates cannot be removed, but a user-defined template with the same name takes precedence.
+`profile set` creates flat profiles. Section headers are added by editing the file directly or inherited from templates. Templates use the same format (`model=` optional) and live in `~/.config/corral/templates/`. A user-defined template with the same name as a built-in takes precedence.
+
+## Shell completions
+
+Completions for commands, models, quants, and profiles are available for **fish**, **zsh**, and **bash**. They install automatically during `corral install` when shell profile edits are accepted. To add them later:
+
+```sh
+corral install --shell-profile
+```
 
 ## Configuration
 
-Environmental variables:
-
-- `FOLD_INSTALL_ROOT`: overrides the directory where llama.cpp is installed. Used by `run`, `serve`, and `pull` to locate binaries.
-- `FOLD_PROFILES_DIR`: overrides the directory where profiles are stored. Defaults to `~/.config/fold/profiles`.
-- `FOLD_TEMPLATES_DIR`: overrides the directory where user-defined templates are stored. Defaults to `~/.config/fold/templates`.
-- `HF_TOKEN`: is passed through for private or gated Hugging Face models. `HF_HUB_TOKEN` and `HUGGING_FACE_HUB_TOKEN` also work.
-
+| Variable | Purpose |
+|---|---|
+| `CORRAL_INSTALL_ROOT` | Override llama.cpp install directory |
+| `CORRAL_PROFILES_DIR` | Override profiles directory (default: `~/.config/corral/profiles`) |
+| `CORRAL_TEMPLATES_DIR` | Override templates directory (default: `~/.config/corral/templates`) |
+| `HF_TOKEN` | Authenticate for private/gated HF models (`HF_HUB_TOKEN` and `HUGGING_FACE_HUB_TOKEN` also work) |
 
 ## Uninstall
 
-Remove llama.cpp and the fold script itself:
-
 ```sh
-fold uninstall --self
+corral uninstall --self                      # remove all backends + corral itself
+corral uninstall --backend mlx               # remove one backend
+corral uninstall --self --delete-hf-cache    # also wipe downloaded models
 ```
 
-To also wipe all downloaded models from the Hugging Face cache:
-
-```sh
-fold uninstall --self --delete-hf-cache
-```
-
-Both steps prompt for confirmation. Add `--force` to skip prompts.
+All uninstall commands prompt for confirmation. Add `--force` to skip.
 
 ## Compatibility
 
-- macOS arm64 / x86_64 and Linux x86_64 / arm64
-- Tools: `curl`, `tar`, `jq`, and standard POSIX userland tools
-- fish, zsh, and bash for PATH/completion setup
-- `install` and `update` are atomic
-- `remove` refuses to delete models that are currently in use
+| | Platforms |
+|---|---|
+| **llama.cpp** | macOS arm64/x86_64, Linux x86_64/arm64 |
+| **MLX** | macOS arm64 only (Apple Silicon) |
+
+Requires `curl`, `tar`, `jq`, and standard POSIX tools. MLX operations require `uv`. Shell completions support fish, zsh, and bash. `install` and `update` are atomic. `remove` refuses to delete models currently in use.
 
 ## Development
 
-[src/fold.sh](src/fold.sh) is the modular source entrypoint. The domain modules live under [src/lib/](src/lib/). Standalone release artifacts are built from these sources by `tools/build.sh`, which inlines all modules and stamps in the version from the current git tag.
-
-Generate a standalone release artifact locally with:
+Source entry point is [src/corral.sh](src/corral.sh) with modules in [src/lib/](src/lib/). The standalone distributable is built by [tools/build.sh](tools/build.sh), which inlines modules and stamps the version from the current git tag.
 
 ```sh
-bash tools/build.sh
-```
-
-## Validation
-
-```sh
-shellcheck src/fold.sh src/lib/*.sh
-bash tests/unit.sh
-bash tests/smoke.sh
+bash tools/build.sh              # build standalone artifact
+shellcheck src/corral.sh src/lib/*.sh   # lint
+bash tests/unit.sh               # unit tests
+bash tests/smoke.sh              # smoke tests
 ```
 
 ## License
 
-MIT License
+MIT License. Copyright (c) 2026 Michael Monteleone.
 
-Copyright (c) 2026 Michael Monteleone
-
-Fold is an independent project and is not affiliated with or associated with [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp), or [Hugging Face](https://huggingface.co).
+Corral is not affiliated with [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggml-org/llama.cpp), [MLX](https://github.com/ml-explore/mlx-lm), or [Hugging Face](https://huggingface.co).

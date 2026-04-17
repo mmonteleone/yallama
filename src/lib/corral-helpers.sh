@@ -1,4 +1,4 @@
-# Shared utility helpers for fold.
+# Shared utility helpers for corral.
 # shellcheck shell=bash
 
 # Print an error message to stderr and exit non-zero.
@@ -44,7 +44,7 @@ shell_profile_edits_allowed() {
         SHELL_PROFILE_EDIT_DECISION="deny"
         return 1
       fi
-      if confirm_action "Allow fold to edit your shell profile for PATH/completion loading?"; then
+      if confirm_action "Allow corral to edit your shell profile for PATH/completion loading?"; then
         SHELL_PROFILE_EDIT_DECISION="allow"
         return 0
       fi
@@ -98,12 +98,80 @@ require_cmds() {
   done
 }
 
+# Print a tab-separated table with dynamic column widths.
+# Arguments:
+#   $1 = alignment string using 'l' (left) or 'r' (right) per column.
+#   $2 = header row as a single tab-separated string.
+# Data rows are read from stdin as tab-separated lines.
+_print_tsv_table() {
+  local alignments="$1"
+  local header_tsv="$2"
+
+  {
+    printf '%s\n' "$header_tsv"
+    cat
+  } | awk -v FS='\t' -v OFS='  ' -v alignments="$alignments" '
+    function repeat(ch, count, out, i) {
+      out = ""
+      for (i = 0; i < count; i++) {
+        out = out ch
+      }
+      return out
+    }
+
+    {
+      row_count++
+      if (NF > col_count) {
+        col_count = NF
+      }
+      for (i = 1; i <= NF; i++) {
+        cells[row_count, i] = $i
+        if (length($i) > widths[i]) {
+          widths[i] = length($i)
+        }
+      }
+    }
+
+    END {
+      if (row_count == 0) {
+        exit 0
+      }
+
+      for (row = 1; row <= row_count; row++) {
+        for (col = 1; col <= col_count; col++) {
+          value = cells[row, col]
+          width = widths[col]
+          if (substr(alignments, col, 1) == "r") {
+            printf "%" width "s", value
+          } else {
+            printf "%-" width "s", value
+          }
+          if (col < col_count) {
+            printf OFS
+          }
+        }
+        printf "\n"
+
+        if (row == 1) {
+          for (col = 1; col <= col_count; col++) {
+            printf "%-" widths[col] "s", repeat("-", widths[col])
+            if (col < col_count) {
+              printf OFS
+            }
+          }
+          printf "\n"
+        }
+      }
+    }
+  '
+}
+
 # Prepend the llama.cpp current/ bin dir to PATH if it is not already present.
 # ${x/#\~/$HOME}: replace a leading '~' with $HOME inside a variable value;
 # the shell's built-in tilde expansion does not apply to variable assignments
 # or values that come from other variables.
 ensure_llama_in_path() {
-  local install_root="${FOLD_INSTALL_ROOT:-$DEFAULT_INSTALL_ROOT}"
+  local install_root="${CORRAL_INSTALL_ROOT:-$DEFAULT_INSTALL_ROOT}"
   # ${x/#\~/$HOME}: bash string substitution anchored to the start (#).
   # Replaces a literal '~' at position 0 with the real HOME path; necessary
   # because tilde expansion only happens at parse time, not in variable values.
@@ -114,4 +182,59 @@ ensure_llama_in_path() {
   if [[ -d "$current_link" ]] && [[ ":$PATH:" != *":${current_link}:"* ]]; then
     export PATH="${current_link}:${PATH}"
   fi
+}
+
+# Return "mlx" or "llama.cpp" as the platform-based default backend.
+# macOS arm64 (Apple Silicon) defaults to mlx; all other platforms default to llama.cpp.
+# shellcheck disable=SC2329
+_platform_default_backend() {
+  if [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
+    printf 'mlx'
+  else
+    printf 'llama.cpp'
+  fi
+}
+
+# Resolve the effective backend for a command.
+# Precedence: explicit --backend flag value > platform default.
+# Prints "mlx" or "llama.cpp".
+# shellcheck disable=SC2329
+resolve_backend() {
+  local flag_value="${1:-}"
+  local backend
+
+  if [[ -n "$flag_value" ]]; then
+    backend="$flag_value"
+  else
+    backend="$(_platform_default_backend)"
+  fi
+
+  case "$backend" in
+    mlx|llama.cpp) printf '%s' "$backend" ;;
+    *) die "unknown backend '${backend}': must be 'mlx' or 'llama.cpp'" ;;
+  esac
+}
+
+# Exit with a helpful message if the current platform does not support MLX.
+# MLX requires macOS on Apple Silicon (arm64).
+# shellcheck disable=SC2329
+require_mlx_platform() {
+  if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
+    die "MLX backend is only supported on macOS Apple Silicon (arm64). Current: $(uname -s)/$(uname -m). Use --backend llama.cpp instead."
+  fi
+}
+
+# Return 0 if the current platform supports MLX (macOS Apple Silicon), 1 otherwise.
+# Non-fatal check: unlike require_mlx_platform(), this does not exit on failure.
+# shellcheck disable=SC2329
+_is_mlx_platform() {
+  [[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]]
+}
+
+# Verify that mlx_lm CLI tools are accessible on PATH.
+# shellcheck disable=SC2329
+require_mlx_lm() {
+  command -v mlx_lm.chat >/dev/null 2>&1 || \
+    command -v mlx_lm.generate >/dev/null 2>&1 || \
+    die "mlx_lm not found. Install it first: $SCRIPT_NAME install --backend mlx"
 }
