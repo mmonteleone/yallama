@@ -1628,59 +1628,12 @@ cmd_serve() {
 
 # ── ps ────────────────────────────────────────────────────────────────────────
 
-# Run a model via mlx_lm.chat (MLX backend).
-_run_mlx() {
-  local model_spec="$1"
-  shift
-  local extra_args=("$@")
-
-  require_mlx_platform
-  require_mlx_lm
-
-  # MLX models are HuggingFace model identifiers. Quant specifiers (:QUANT) are
-  # llama.cpp-specific; strip them with a warning.
-  if [[ "$model_spec" == *:* ]]; then
-    echo "Warning: MLX backend does not use quant specifiers; ignoring ':${model_spec#*:}'." >&2
-    model_spec="${model_spec%%:*}"
-  fi
-
-  # Profile names (no '/') are not supported with the MLX backend.
-  if [[ "$model_spec" != */* ]]; then
-    die "invalid MLX model id '${model_spec}': expected HuggingFace format USER/MODEL"
-  fi
-
-  exec mlx_lm.chat --model "$model_spec" "${extra_args[@]+"${extra_args[@]}"}"
-}
-
-# Serve a model via mlx_lm.server (MLX backend).
-_serve_mlx() {
-  local model_spec="$1"
-  shift
-  local extra_args=("$@")
-
-  require_mlx_platform
-  command -v mlx_lm.server >/dev/null 2>&1 || \
-    die "mlx_lm not found. Install it first: $SCRIPT_NAME install --backend mlx"
-
-  if [[ "$model_spec" == *:* ]]; then
-    echo "Warning: MLX backend does not use quant specifiers; ignoring ':${model_spec#*:}'." >&2
-    model_spec="${model_spec%%:*}"
-  fi
-
-  if [[ "$model_spec" != */* ]]; then
-    die "invalid MLX model id '${model_spec}': expected HuggingFace format USER/MODEL"
-  fi
-
-  exec mlx_lm.server --model "$model_spec" "${extra_args[@]+"${extra_args[@]}"}"
-}
-
-cmd_ps() {
-  local ps_output
+_emit_runtime_process_rows() {
   # Try GNU/Linux ps format first (-eo); fall back to BSD/macOS (-ax -o).
   # Detect target processes from the command name or early executable/script
   # tokens in args. Limiting fallback to the first command-like fields avoids
   # self-matching awk script text that may mention llama/port flags.
-  ps_output="$({ ps -eo pid=,comm=,args= -ww 2>/dev/null || ps -ax -o pid=,comm=,args= -ww 2>/dev/null; } | awk '
+  { ps -eo pid=,comm=,args= -ww 2>/dev/null || ps -ax -o pid=,comm=,args= -ww 2>/dev/null; } | awk '
     {
       pid = $1
       proc = $2
@@ -1736,7 +1689,58 @@ cmd_ps() {
 
       printf "%s\t%s\t%s\t%s\n", pid, proc, port, model
     }
-  ')"
+  '
+}
+
+# Run a model via mlx_lm.chat (MLX backend).
+_run_mlx() {
+  local model_spec="$1"
+  shift
+  local extra_args=("$@")
+
+  require_mlx_platform
+  require_mlx_lm
+
+  # MLX models are HuggingFace model identifiers. Quant specifiers (:QUANT) are
+  # llama.cpp-specific; strip them with a warning.
+  if [[ "$model_spec" == *:* ]]; then
+    echo "Warning: MLX backend does not use quant specifiers; ignoring ':${model_spec#*:}'." >&2
+    model_spec="${model_spec%%:*}"
+  fi
+
+  # Profile names (no '/') are not supported with the MLX backend.
+  if [[ "$model_spec" != */* ]]; then
+    die "invalid MLX model id '${model_spec}': expected HuggingFace format USER/MODEL"
+  fi
+
+  exec mlx_lm.chat --model "$model_spec" "${extra_args[@]+"${extra_args[@]}"}"
+}
+
+# Serve a model via mlx_lm.server (MLX backend).
+_serve_mlx() {
+  local model_spec="$1"
+  shift
+  local extra_args=("$@")
+
+  require_mlx_platform
+  command -v mlx_lm.server >/dev/null 2>&1 || \
+    die "mlx_lm not found. Install it first: $SCRIPT_NAME install --backend mlx"
+
+  if [[ "$model_spec" == *:* ]]; then
+    echo "Warning: MLX backend does not use quant specifiers; ignoring ':${model_spec#*:}'." >&2
+    model_spec="${model_spec%%:*}"
+  fi
+
+  if [[ "$model_spec" != */* ]]; then
+    die "invalid MLX model id '${model_spec}': expected HuggingFace format USER/MODEL"
+  fi
+
+  exec mlx_lm.server --model "$model_spec" "${extra_args[@]+"${extra_args[@]}"}"
+}
+
+cmd_ps() {
+  local ps_output
+  ps_output="$(_emit_runtime_process_rows)"
 
   if [[ -z "$ps_output" ]]; then
     echo "No llama-cli, llama-server, mlx_lm.chat, or mlx_lm.server processes running."
