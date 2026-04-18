@@ -905,6 +905,112 @@ test_completions_bash_profile_set_positionals() {
   pass '_completions_bash completes profile set template/model positionals'
 }
 
+# ── launch helpers ───────────────────────────────────────────────────────────
+
+test_render_merged_json_file_preserves_unrelated_keys() {
+  local path rendered
+  path="${TEST_ROOT}/launch-settings.json"
+  cat >"$path" <<'EOF'
+{
+  "packages": {
+    "allowed": [
+      "ripgrep"
+    ]
+  },
+  "defaultProvider": "other",
+  "defaultModel": "other/model"
+}
+EOF
+
+  rendered="$(_render_merged_json_file "$path" '{"defaultProvider":"corral-launch","defaultModel":"demo/server-model"}')"
+
+  if assert_contains "$rendered" '"packages"' && \
+     assert_contains "$rendered" '"defaultProvider": "corral-launch"' && \
+     assert_contains "$rendered" '"defaultModel": "demo/server-model"'; then
+    pass 'render merged json preserves unrelated keys'
+  else
+    fail 'render merged json preserves unrelated keys' "unexpected merged json: $rendered"
+  fi
+}
+
+test_render_merged_json_file_accepts_jsonc() {
+  local path rendered
+  path="${TEST_ROOT}/launch-opencode.jsonc"
+  cat >"$path" <<'EOF'
+{
+  // existing config
+  "provider": {
+    "existing": {
+      "npm": "example",
+    },
+  },
+}
+EOF
+
+  rendered="$(_render_merged_json_file "$path" '{"model":"corral-launch/demo"}' 1)"
+
+  if assert_contains "$rendered" '"existing"' && \
+     assert_contains "$rendered" '"model": "corral-launch/demo"'; then
+    pass 'render merged json accepts jsonc'
+  else
+    fail 'render merged json accepts jsonc' "unexpected merged jsonc output: $rendered"
+  fi
+}
+
+test_render_merged_json_file_migrates_pi_models_schema() {
+  local path rendered
+  path="${TEST_ROOT}/launch-pi-models.json"
+  cat >"$path" <<'EOF'
+{
+  "existing": {
+    "baseUrl": "https://example.invalid/v1",
+    "api": "openai-completions",
+    "models": [
+      "example/model"
+    ]
+  }
+}
+EOF
+
+  rendered="$(_render_merged_json_file "$path" '{"providers":{"corral-launch":{"baseUrl":"http://127.0.0.1:8080/v1","api":"openai-completions","models":[{"id":"demo/server-model"}]}}}' 0 "pi-models")"
+
+  if assert_contains "$rendered" '"providers"' && \
+     assert_contains "$rendered" '"existing"' && \
+     assert_contains "$rendered" '"corral-launch"' && \
+     assert_contains "$rendered" '"id": "demo/server-model"'; then
+    pass 'render merged json migrates pi models schema'
+  else
+    fail 'render merged json migrates pi models schema' "unexpected migrated pi models json: $rendered"
+  fi
+}
+
+test_launch_tool_supports_process_matrix() {
+  if _launch_tool_supports_process pi mlx_lm.server && \
+     _launch_tool_supports_process opencode llama-server && \
+     ! _launch_tool_supports_process codex llama-server && \
+     ! _launch_tool_supports_process pi llama-cli; then
+    pass 'launch tool support matrix'
+  else
+    fail 'launch tool support matrix' 'unexpected server compatibility result'
+  fi
+}
+
+test_completions_include_launch() {
+  local fish_out zsh_out bash_out
+  fish_out="$(_completions_fish)"
+  zsh_out="$(_completions_zsh)"
+  bash_out="$(_completions_bash)"
+
+  if assert_contains "$fish_out" 'launch' && \
+     assert_contains "$fish_out" 'pi opencode' && \
+     assert_contains "$zsh_out" 'launch:Configure and launch a supported coding harness' && \
+     assert_contains "$bash_out" 'pi opencode'; then
+    pass 'completions include launch'
+  else
+    fail 'completions include launch' 'expected launch command and tool completions in generated shells'
+  fi
+}
+
 # ── run tests ────────────────────────────────────────────────────────────────
 
 test_parse_model_spec_without_quant
@@ -959,8 +1065,13 @@ test_section_matches_command_sections
 test_section_matches_backend_sections
 test_section_matches_compound_sections
 test_collect_template_entries_includes_builtins
+test_render_merged_json_file_preserves_unrelated_keys
+test_render_merged_json_file_accepts_jsonc
+test_render_merged_json_file_migrates_pi_models_schema
+test_launch_tool_supports_process_matrix
 test_completions_fish_generation
 test_completions_fish_profile_set_positionals
+test_completions_include_launch
 test_completions_zsh_profile_template_filtering
 test_completions_zsh_profile_set_positionals
 test_completions_bash_profile_template_filtering

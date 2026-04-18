@@ -68,6 +68,8 @@ source "${SCRIPT_DIR}/lib/corral-cache.sh"
 source "${SCRIPT_DIR}/lib/corral-profiles.sh"
 # shellcheck source=src/lib/corral-runtime.sh
 source "${SCRIPT_DIR}/lib/corral-runtime.sh"
+# shellcheck source=src/lib/corral-launch.sh
+source "${SCRIPT_DIR}/lib/corral-launch.sh"
 # shellcheck source=src/lib/corral-search.sh
 source "${SCRIPT_DIR}/lib/corral-search.sh"
 # shellcheck source=src/lib/corral-completions.sh
@@ -94,6 +96,7 @@ Commands:
   remove (rm)          Remove backend-scoped model cache entries or a saved profile
   run <MODEL_NAME>     Download and run a HuggingFace model (mlx or llama.cpp)
   serve <MODEL_NAME>   Download and serve a HuggingFace model (mlx or llama.cpp)
+  launch <TOOL>        Configure and launch a supported coding harness
   ps                   Show running llama-cli / llama-server / mlx_lm.server processes
   profile              Manage named run/serve profiles
   template             Manage templates
@@ -133,6 +136,7 @@ case "$COMMAND" in
   remove|rm)   cmd_remove "$@" ;;
   run)         cmd_run "$@" ;;
   serve)       cmd_serve "$@" ;;
+  launch)      cmd_launch "$@" ;;
   ps)          cmd_ps "$@" ;;
   profile)     cmd_profile "$@" ;;
   template)    cmd_template "$@" ;;

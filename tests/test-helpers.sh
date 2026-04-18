@@ -91,6 +91,7 @@ source_corral_libs() {
   source "${ROOT_DIR}/src/lib/corral-cache.sh"
   source "${ROOT_DIR}/src/lib/corral-profiles.sh"
   source "${ROOT_DIR}/src/lib/corral-runtime.sh"
+  source "${ROOT_DIR}/src/lib/corral-launch.sh"
   source "${ROOT_DIR}/src/lib/corral-search.sh"
   source "${ROOT_DIR}/src/lib/corral-completions.sh"
 }

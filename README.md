@@ -2,11 +2,12 @@
 
 Run local models with the ease of [Ollama](https://ollama.com) and full power of official [llama.cpp](https://github.com/ggml-org/llama.cpp) releases and [MLX](https://github.com/ml-explore/mlx-lm) on Apple Silicon.
 
-**Corral is just a shell script**. It installs and updates official latest llama.cpp and MLX releases, uses the standard Hugging Face registry for models, and provides an Ollama-style CLI for running and managing local models: *search*, *pull*, *run*, *serve*, *list*, *remove*, *update*, etc. along with templated usage profile helpers.
+**Corral is just a shell script**. It installs and updates official latest llama.cpp and MLX releases, uses the standard Hugging Face registry for models, and provides an Ollama-style CLI for running and managing local models: *search*, *pull*, *run*, *serve*, *launch*, *list*, *remove*, *update*, etc. along with templated usage profiles and tool launchers.
 
 ```sh
 corral search gemma
 corral run unsloth/gemma-4-26B-A4B-it-GGUF
+corral launch pi
 ```
 
 ## Why Corral?
@@ -16,6 +17,7 @@ corral run unsloth/gemma-4-26B-A4B-it-GGUF
 - The full Hugging Face model registry, not just what Ollama ships
 - Model search and discovery against Hugging Face from the command line
 - Saved, templated, profiles for pinning a model with a specific set of flags
+- Pre-configured launcher for tools including [OpenCode](https://opencode.ai) and [Pi](https://pi.dev)
 - Command, model, profile, and quant shell completions for fish, zsh, and bash
 - Standard HF cache. Downloaded models are visible to other tools
 
@@ -67,6 +69,10 @@ corral run coder
 corral profile set mycoder code unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
 corral run mycoder
 
+# Launch supported coding harnesses against a running server
+corral launch pi
+corral launch opencode
+
 corral list                                  # Models, profiles, templates
 corral remove unsloth/gemma-4-26B-A4B-it-GGUF
 corral remove coder
@@ -79,6 +85,7 @@ corral remove coder
 | `install` | Install backend(s) and shell completions |
 | `run MODEL\|PROFILE` | Interactive chat (`llama-cli` / `mlx_lm.chat`) |
 | `serve MODEL\|PROFILE` | OpenAI-compatible server (`llama-server` / `mlx_lm.server`) |
+| `launch TOOL` | Configure and launch `pi` or `opencode` against a running server |
 | `pull MODEL` | Download model artifacts without running |
 | `search QUERY` | Search Hugging Face for compatible models |
 | `browse MODEL` | Open a model's Hugging Face page in the browser |
@@ -207,6 +214,12 @@ model=unsloth/gemma-4-26B-A4B-it-GGUF
 | `[llama.cpp.run]` / `[llama.cpp.serve]` / `[mlx.run]` / `[mlx.serve]` | One backend + one command |
 
 `profile set` creates flat profiles. Section headers are added by editing the file directly or inherited from templates. Templates use the same format (`model=` optional) and live in `~/.config/corral/templates/`. A user-defined template with the same name as a built-in takes precedence.
+
+## Launch coding harnesses
+
+`corral launch` configures a supported coding harness to use a currently running `corral serve` instance, then launches the harness.
+
+Supported harnesses currently include `pi` and `opencode`. Corral inspects running servers via `corral ps`, matches the server's local OpenAI-compatible endpoint and model name, and writes that into the harness config. Existing configs are preserved with a timestamped backup next to any modified config file
 
 ## Shell completions
 

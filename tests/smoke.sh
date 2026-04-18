@@ -200,6 +200,16 @@ EOF
   chmod +x "$path"
 }
 
+write_mock_exec_tool() {
+  local path="$1"
+  cat >"$path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s|%s\n' "$(basename "$0")" "$*" >>"${CORRAL_TEST_LOG_DIR}/launch.log"
+EOF
+  chmod +x "$path"
+}
+
 write_mock_brew() {
   local path="$1"
   cat >"$path" <<'EOF'
@@ -281,10 +291,21 @@ test_generated_standalone_script() {
     return
   fi
 
+  if grep -q 'template_dir="$(cd "$(dirname "${BASH_SOURCE\[0\]}")" && pwd)/../launch-templates"' "$generated_script"; then
+    fail 'generated standalone script inlines launch templates' 'expected launch template loader to be inlined in the standalone script'
+    return
+  fi
+
+  if ! grep -q 'pi-settings)' "$generated_script"; then
+    fail 'generated standalone script inlines launch templates' 'expected standalone script to include embedded launch template cases'
+    return
+  fi
+
   run_cmd "$stdout_file" "$stderr_file" bash "$generated_script" help
   if [[ $RUN_STATUS -eq 0 ]] && assert_contains "$(cat "$stdout_file")" 'Commands:'; then
     pass 'generated standalone script builds'
     pass 'generated standalone script is self-contained'
+    pass 'generated standalone script inlines launch templates'
   else
     fail 'generated standalone script is self-contained' "expected generated script to run standalone help successfully: $(cat "$stderr_file")"
   fi
@@ -993,6 +1014,254 @@ EOF
 
   pass 'run forwards model and extra args'
   pass 'serve forwards jinja and extra args'
+}
+
+test_launch_requires_port_when_multiple_servers() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_mock_ps "${TEST_DIR}/bin/ps"
+  write_mock_exec_tool "${TEST_DIR}/bin/pi"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" launch pi
+
+  if [[ $RUN_STATUS -ne 0 ]] && \
+     assert_contains "$(cat "$stderr_file")" 'Multiple compatible corral servers are running' && \
+     assert_contains "$(cat "$stderr_file")" '9000' && \
+     assert_contains "$(cat "$stderr_file")" '8082'; then
+    pass 'launch requires port when multiple compatible servers are running'
+  else
+    fail 'launch requires port when multiple compatible servers are running' "expected launch to reject ambiguous server selection: $(cat "$stderr_file")"
+  fi
+}
+
+test_launch_pi_updates_configs_and_reuses_matching_config() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local agent_dir="${HOME}/.pi/agent"
+  local settings_path="${agent_dir}/settings.json"
+  local models_path="${agent_dir}/models.json"
+  local backup_count_first backup_count_second
+
+  write_mock_ps "${TEST_DIR}/bin/ps"
+  write_mock_exec_tool "${TEST_DIR}/bin/pi"
+  cat >"${TEST_DIR}/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo 'launch unexpectedly invoked python3' >&2
+exit 99
+EOF
+  chmod +x "${TEST_DIR}/bin/python3"
+  mkdir -p "$agent_dir"
+
+  cat >"$settings_path" <<'EOF'
+{
+  "packages": {
+    "allowed": [
+      "ripgrep"
+    ]
+  },
+  "defaultProvider": "other",
+  "defaultModel": "other/model"
+}
+EOF
+
+  cat >"$models_path" <<'EOF'
+{
+  "providers": {
+    "existing": {
+      "baseUrl": "https://example.invalid/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "example/model"
+        }
+      ]
+    }
+  }
+}
+EOF
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" launch --port 8082 pi -- --resume last
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'launch pi updates config and launches tool' "launch pi failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if ! assert_contains "$(cat "$settings_path")" '"packages"' || \
+     ! assert_contains "$(cat "$settings_path")" '"defaultProvider": "corral-launch"' || \
+     ! assert_contains "$(cat "$settings_path")" '"defaultModel": "mlx-community/Qwen2.5-7B-Instruct-4bit"' || \
+      ! assert_contains "$(cat "$models_path")" '"providers"' || \
+     ! assert_contains "$(cat "$models_path")" '"existing"' || \
+     ! assert_contains "$(cat "$models_path")" '"baseUrl": "http://127.0.0.1:8082/v1"' || \
+      ! assert_contains "$(cat "$models_path")" '"id": "mlx-community/Qwen2.5-7B-Instruct-4bit"' || \
+     ! assert_contains "$(cat "${CORRAL_TEST_LOG_DIR}/launch.log")" 'pi|--resume last'; then
+    fail 'launch pi updates config and launches tool' 'expected pi launch to update settings/models and exec pi with passthrough args'
+    return
+  fi
+
+  backup_count_first="$(find "$agent_dir" -name '*.bak.*' | wc -l | tr -d ' ')"
+  if [[ "$backup_count_first" != "2" ]]; then
+    fail 'launch pi creates backups only for changed files' "expected 2 backup files after first pi launch, got ${backup_count_first}"
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" launch --port 8082 pi
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'launch pi reuses matching config without new backup' "second launch pi failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  backup_count_second="$(find "$agent_dir" -name '*.bak.*' | wc -l | tr -d ' ')"
+  if [[ "$backup_count_second" == "$backup_count_first" ]] && \
+     assert_contains "$(cat "$stdout_file")" 'Config already matched'; then
+    pass 'launch pi updates config and launches tool'
+    pass 'launch pi creates backups only for changed files'
+  else
+    fail 'launch pi creates backups only for changed files' "expected backup count to remain ${backup_count_first}, got ${backup_count_second}"
+  fi
+}
+
+test_launch_pi_backs_up_matching_preexisting_config_once() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local agent_dir="${HOME}/.pi/agent"
+  local settings_path="${agent_dir}/settings.json"
+  local models_path="${agent_dir}/models.json"
+  local backup_count_first backup_count_second
+  local settings_backup_count models_backup_count
+
+  write_mock_ps "${TEST_DIR}/bin/ps"
+  write_mock_exec_tool "${TEST_DIR}/bin/pi"
+  cat >"${TEST_DIR}/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo 'launch unexpectedly invoked python3' >&2
+exit 99
+EOF
+  chmod +x "${TEST_DIR}/bin/python3"
+  mkdir -p "$agent_dir"
+
+  cat >"$settings_path" <<'EOF'
+{
+  "defaultProvider": "corral-launch",
+  "defaultModel": "mlx-community/Qwen2.5-7B-Instruct-4bit",
+  "packages": {
+    "allowed": [
+      "ripgrep"
+    ]
+  }
+}
+EOF
+
+  cat >"$models_path" <<'EOF'
+{
+  "providers": {
+    "corral-launch": {
+      "baseUrl": "http://127.0.0.1:8082/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "mlx-community/Qwen2.5-7B-Instruct-4bit"
+        }
+      ]
+    }
+  }
+}
+EOF
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" launch --port 8082 pi
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'launch pi backs up matching pre-existing config once' "launch pi failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  backup_count_first="$(find "$agent_dir" -name '*.bak.*' | wc -l | tr -d ' ')"
+    settings_backup_count="$(find "$agent_dir" -name 'settings.json.bak.*' | wc -l | tr -d ' ')"
+    models_backup_count="$(find "$agent_dir" -name 'models.json.bak.*' | wc -l | tr -d ' ')"
+    if [[ "$backup_count_first" != "2" ]] || \
+      [[ "$settings_backup_count" != "1" ]] || \
+      [[ "$models_backup_count" != "1" ]] || \
+     ! assert_contains "$(cat "$stdout_file")" 'Backed up' || \
+     ! assert_contains "$(cat "$stdout_file")" 'Config already matched'; then
+    fail 'launch pi backs up matching pre-existing config once' 'expected launch pi to preserve matching pre-existing config with one-time backups'
+    return
+  fi
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" launch --port 8082 pi
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'launch pi does not duplicate backups for matching config' "second launch pi failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  backup_count_second="$(find "$agent_dir" -name '*.bak.*' | wc -l | tr -d ' ')"
+  if [[ "$backup_count_second" == "$backup_count_first" ]]; then
+    pass 'launch pi backs up matching pre-existing config once'
+    pass 'launch pi does not duplicate backups for matching config'
+  else
+    fail 'launch pi does not duplicate backups for matching config' "expected backup count to remain ${backup_count_first}, got ${backup_count_second}"
+  fi
+}
+
+test_launch_opencode_updates_jsonc_and_launches_tool() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local config_dir="${HOME}/.config/opencode"
+  local config_path="${config_dir}/opencode.jsonc"
+
+  write_mock_ps "${TEST_DIR}/bin/ps"
+  write_mock_exec_tool "${TEST_DIR}/bin/opencode"
+  cat >"${TEST_DIR}/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo 'launch unexpectedly invoked python3' >&2
+exit 99
+EOF
+  chmod +x "${TEST_DIR}/bin/python3"
+  mkdir -p "$config_dir"
+
+  cat >"$config_path" <<'EOF'
+{
+  // existing config
+  "theme": "nord",
+  "provider": {
+    "existing": {
+      "npm": "example",
+    },
+  },
+}
+EOF
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" launch --port 8082 opencode -- .
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'launch opencode updates jsonc and launches tool' "launch opencode failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if assert_contains "$(cat "$config_path")" '"theme": "nord"' && \
+     assert_contains "$(cat "$config_path")" '"corral-launch"' && \
+     assert_contains "$(cat "$config_path")" '"model": "corral-launch/mlx-community/Qwen2.5-7B-Instruct-4bit"' && \
+     assert_contains "$(cat "${CORRAL_TEST_LOG_DIR}/launch.log")" 'opencode|.'; then
+    pass 'launch opencode updates jsonc and launches tool'
+  else
+    fail 'launch opencode updates jsonc and launches tool' 'expected opencode launch to merge JSONC config and exec opencode'
+  fi
+}
+
+test_launch_codex_is_unsupported() {
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+
+  write_mock_ps "${TEST_DIR}/bin/ps"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" launch --port 9000 codex
+
+  if [[ $RUN_STATUS -ne 0 ]] && \
+     assert_contains "$(cat "$stderr_file")" "unsupported launch target 'codex'"; then
+    pass 'launch codex is unsupported'
+  else
+    fail 'launch codex is unsupported' "expected codex launch to be rejected as unsupported: $(cat "$stderr_file")"
+  fi
 }
 
 test_mlx_install_uv_flow() {
@@ -4373,6 +4642,21 @@ main() {
 
   setup_test_env
   test_run_and_serve_forwarding
+
+  setup_test_env
+  test_launch_requires_port_when_multiple_servers
+
+  setup_test_env
+  test_launch_pi_updates_configs_and_reuses_matching_config
+
+  setup_test_env
+  test_launch_pi_backs_up_matching_preexisting_config_once
+
+  setup_test_env
+  test_launch_opencode_updates_jsonc_and_launches_tool
+
+  setup_test_env
+  test_launch_codex_is_unsupported
 
   setup_test_env
   test_mlx_install_uv_flow
