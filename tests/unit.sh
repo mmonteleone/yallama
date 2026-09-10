@@ -636,23 +636,35 @@ test_validate_template_name_invalid() {
 
 # ── _get_builtin_template_content ────────────────────────────────────────────
 
-test_builtin_template_general() {
+test_builtin_template_gemma() {
   local result
-  result="$(_get_builtin_template_content "general")"
-  if assert_contains "$result" "--temp 0.7" && assert_contains "$result" "[llama.cpp]"; then
-    pass 'builtin template general'
+  result="$(_get_builtin_template_content "gemma")"
+  if assert_contains "$result" "--temp 1.0" && assert_contains "$result" "[llama.cpp]"; then
+    pass 'builtin template gemma'
   else
-    fail 'builtin template general' "got: $result"
+    fail 'builtin template gemma' "got: $result"
   fi
 }
 
-test_builtin_template_code() {
+test_builtin_template_qwen() {
   local result
-  result="$(_get_builtin_template_content "code")"
-  if assert_contains "$result" "--temp 0.3" && assert_contains "$result" "[llama.cpp.serve]"; then
-    pass 'builtin template code'
+  result="$(_get_builtin_template_content "qwen")"
+  if assert_contains "$result" "--temp 1.0" && assert_contains "$result" "[llama.cpp.serve]"; then
+    pass 'builtin template qwen'
   else
-    fail 'builtin template code' "got: $result"
+    fail 'builtin template qwen' "got: $result"
+  fi
+}
+
+test_builtin_template_glimmer() {
+  local result
+  result="$(_get_builtin_template_content "glimmer")"
+  if assert_contains "$result" "model=meta-models/Muse-Glimmer-30B-GGUF:Q4_K_M" && \
+     assert_contains "$result" "[mlx.serve]" && \
+     assert_contains "$result" "--reasoning auto"; then
+    pass 'builtin template glimmer'
+  else
+    fail 'builtin template glimmer' "got: $result"
   fi
 }
 
@@ -1609,9 +1621,9 @@ test_section_matches_compound_sections() {
 test_collect_template_entries_includes_builtins() {
   local result
   result="$(collect_template_entries)"
-  if assert_contains "$result" 'code|built-in|(none)' && \
-     assert_contains "$result" 'general|built-in|(none)' && \
-     assert_contains "$result" 'qwen-3-general|built-in|unsloth/Qwen3.8-27B-GGUF:Q4_K_M'; then
+  if assert_contains "$result" 'gemma|built-in|unsloth/gemma-4-26B-A4B-it-qat-GGUF:UD-Q4_K_XL' && \
+     assert_contains "$result" 'glimmer|built-in|meta-models/Muse-Glimmer-30B-GGUF:Q4_K_M' && \
+     assert_contains "$result" 'qwen|built-in|unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL'; then
     pass 'collect_template_entries includes built-ins with default models'
   else
     fail 'collect_template_entries includes built-ins with default models' "got: $result"
@@ -1647,7 +1659,7 @@ test_collect_template_entries_reads_only_templates_dir() {
 test_collect_template_entries_includes_model_less_user_templates() {
   local templates_dir="${TEST_ROOT}/templates-model-less"
   mkdir -p "$templates_dir"
-  printf '%s\n' '--temp 0.3' > "${templates_dir}/code2"
+  printf '%s\n' '--temp 0.3' > "${templates_dir}/custom2"
 
   local saved_CORRAL_TEMPLATES_DIR="${CORRAL_TEMPLATES_DIR:-}"
   CORRAL_TEMPLATES_DIR="$templates_dir"
@@ -1657,7 +1669,7 @@ test_collect_template_entries_includes_model_less_user_templates() {
 
   CORRAL_TEMPLATES_DIR="$saved_CORRAL_TEMPLATES_DIR"
 
-  if assert_contains "$result" 'code2|user|(none)'; then
+  if assert_contains "$result" 'custom2|user|(none)'; then
     pass 'collect_template_entries includes user templates without model lines'
   else
     fail 'collect_template_entries includes user templates without model lines' "got: $result"
@@ -2022,7 +2034,7 @@ test_toml_string_literal_escapes_values() {
 test_write_codex_model_catalog_uses_freeform_tools_metadata() {
   local catalog shell_type apply_patch_tool search_enabled context_window
 
-  _write_codex_model_catalog 'unsloth/Qwen3.8-27B-GGUF:Q4_K_M' 32768
+  _write_codex_model_catalog 'unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M' 32768
   catalog="$REPLY_CODEX_MODEL_CATALOG"
 
   shell_type="$(jq -r '.models[0].shell_type' "$catalog")"
@@ -2102,8 +2114,9 @@ else
   test_validate_profile_name_empty
   test_validate_template_name_valid
   test_validate_template_name_invalid
-  test_builtin_template_general
-  test_builtin_template_code
+  test_builtin_template_gemma
+  test_builtin_template_qwen
+  test_builtin_template_glimmer
   test_builtin_template_unknown
   test_detect_arch
   test_platform_default_backend_macos_arm64
