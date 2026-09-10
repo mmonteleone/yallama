@@ -659,7 +659,7 @@ test_builtin_template_qwen() {
 test_builtin_template_glimmer() {
   local result
   result="$(_get_builtin_template_content "glimmer")"
-  if assert_contains "$result" "model=unsloth/Muse-Glimmer-30B-GGUF:UD-Q4_K_XL" && \
+  if assert_contains "$result" "model=meta-models/Muse-Glimmer-30B-GGUF:Q4_K_M" && \
      assert_contains "$result" "[mlx.serve]" && \
      assert_contains "$result" "--reasoning auto"; then
     pass 'builtin template glimmer'
@@ -1622,7 +1622,7 @@ test_collect_template_entries_includes_builtins() {
   local result
   result="$(collect_template_entries)"
   if assert_contains "$result" 'gemma|built-in|unsloth/gemma-4-26B-A4B-it-qat-GGUF:UD-Q4_K_XL' && \
-     assert_contains "$result" 'glimmer|built-in|unsloth/Muse-Glimmer-30B-GGUF:UD-Q4_K_XL' && \
+     assert_contains "$result" 'glimmer|built-in|meta-models/Muse-Glimmer-30B-GGUF:Q4_K_M' && \
      assert_contains "$result" 'qwen|built-in|unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL'; then
     pass 'collect_template_entries includes built-ins with default models'
   else

@@ -3481,7 +3481,7 @@ test_list_includes_templates_section() {
   if ! assert_contains "$out" 'gemma' || \
      ! assert_contains "$out" 'glimmer' || \
      ! assert_contains "$out" 'qwen' || \
-     ! assert_contains "$out" 'unsloth/Muse-Glimmer-30B-GGUF:UD-Q4_K_XL' || \
+     ! assert_contains "$out" 'meta-models/Muse-Glimmer-30B-GGUF:Q4_K_M' || \
      ! assert_contains "$out" 'unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL'; then
     fail 'list includes templates section' "expected built-in templates in list output, got: $out"
     return
