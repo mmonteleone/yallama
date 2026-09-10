@@ -213,6 +213,11 @@ done
 
 printf '%s\n' "$url" >>"${CORRAL_TEST_LOG_DIR}/curl.log"
 
+if [[ "$url" == *"/resolve/main/"* && -n "${CORRAL_MTP_SIDECAR_FIXTURE:-}" && -n "$output" ]]; then
+  cp "$CORRAL_MTP_SIDECAR_FIXTURE" "$output"
+  exit 0
+fi
+
 if [[ "$url" == *"/releases/latest" ]]; then
   tag="$(cat "${CORRAL_TEST_STATE_DIR}/latest-tag")"
   cat "${CORRAL_TEST_FIXTURES_DIR}/release-${tag}.json" | emit_body
@@ -535,6 +540,7 @@ setup_test_env() {
   unset XDG_CONFIG_HOME
   unset ZDOTDIR
   unset NO_COLOR
+  unset CORRAL_MTP_SIDECAR_FIXTURE
 
   mkdir -p "$HOME" "$CORRAL_TEST_FIXTURES_DIR" "$CORRAL_TEST_STATE_DIR" "$CORRAL_TEST_LOG_DIR" "${TEST_DIR}/bin"
   write_mock_curl "${TEST_DIR}/bin/curl"
@@ -925,6 +931,11 @@ set -euo pipefail
 
 printf '%s\n' "$*" >"$CORRAL_LLAMA_CLI_ARGS_LOG"
 
+if [[ " $* " == *' --no-conversation '* ]]; then
+  echo 'obsolete --no-conversation flag was passed to llama-cli' >&2
+  exit 44
+fi
+
 if [[ -t 0 ]]; then
   echo 'stdin should not be attached to a terminal during pull' >&2
   exit 42
@@ -956,8 +967,8 @@ EOF
     return
   fi
 
-  if ! assert_contains "$(cat "$args_log")" '--no-conversation'; then
-    fail 'non-interactive pull' 'expected pull to force non-conversation mode'
+  if ! assert_contains "$(cat "$args_log")" '--single-turn'; then
+    fail 'non-interactive pull' 'expected pull to force single-turn mode'
     return
   fi
 
@@ -1091,6 +1102,7 @@ test_pull_prefetches_mtp_sidecar_and_hides_sidecar_row() {
   local model_spec='demo/gemma-4-26B-A4B-it-qat-GGUF:UD-Q4_K_XL'
   local model_name='demo/gemma-4-26B-A4B-it-qat-GGUF'
   local expected_cache_dir="${HOME}/.cache/huggingface/hub/models--demo--gemma-4-26B-A4B-it-qat-GGUF"
+  local mtp_fixture="${TEST_DIR}/mtp-sidecar.gguf"
 
   write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
   mkdir -p "$current_link" "$(dirname "$expected_cache_dir")"
@@ -1102,10 +1114,12 @@ test_pull_prefetches_mtp_sidecar_and_hides_sidecar_row() {
   "tags": ["gguf"],
   "siblings": [
     {"rfilename": "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf"},
-    {"rfilename": "mtp-gemma-4-26B-A4B-it-qat.gguf"}
+    {"rfilename": "MTP/mtp-gemma-4-26B-A4B-it-qat-Q4_0.gguf"}
   ]
 }
 EOF
+
+  printf 'mock MTP sidecar\n' >"$mtp_fixture"
 
   cat >"${current_link}/llama-cli" <<'EOF'
 #!/usr/bin/env bash
@@ -1114,9 +1128,6 @@ set -euo pipefail
 printf '%s\n' "$*" >"$CORRAL_LLAMA_CLI_ARGS_LOG"
 mkdir -p "$CORRAL_EXPECTED_CACHE_DIR/snapshots/def456"
 : >"$CORRAL_EXPECTED_CACHE_DIR/snapshots/def456/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf"
-if [[ "$*" == *"--spec-type draft-mtp"* ]]; then
-  : >"$CORRAL_EXPECTED_CACHE_DIR/snapshots/def456/mtp-gemma-4-26B-A4B-it-qat.gguf"
-fi
 exit 0
 EOF
   chmod +x "${current_link}/llama-cli"
@@ -1124,6 +1135,7 @@ EOF
   export CORRAL_INSTALL_ROOT="$install_root"
   export CORRAL_EXPECTED_CACHE_DIR="$expected_cache_dir"
   export CORRAL_LLAMA_CLI_ARGS_LOG="$args_log"
+  export CORRAL_MTP_SIDECAR_FIXTURE="$mtp_fixture"
 
   run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_spec"
 
@@ -1135,8 +1147,16 @@ EOF
   local args_out
   args_out="$(cat "$args_log")"
   if ! assert_contains "$args_out" '--spec-type draft-mtp' || \
-     ! assert_contains "$args_out" '--spec-draft-n-max 1'; then
+     ! assert_contains "$args_out" '--spec-draft-n-max 1' || \
+     ! assert_contains "$args_out" '--hf-repo-draft demo/gemma-4-26B-A4B-it-qat-GGUF' || \
+     ! assert_contains "$args_out" '--spec-draft-model MTP/mtp-gemma-4-26B-A4B-it-qat-Q4_0.gguf' || \
+     assert_contains "$args_out" '--hf-repo-draft demo/gemma-4-26B-A4B-it-qat-GGUF:Q4_0'; then
     fail 'pull prefetches mtp sidecar' "expected draft-mtp args, got: $args_out"
+    return
+  fi
+
+  if [[ ! -f "$expected_cache_dir/snapshots/def456/MTP/mtp-gemma-4-26B-A4B-it-qat-Q4_0.gguf" ]]; then
+    fail 'pull prefetches mtp sidecar' 'expected the nested MTP sidecar to be downloaded into the HF snapshot'
     return
   fi
 
@@ -1150,7 +1170,7 @@ EOF
   list_out="$(cat "$stdout_file")"
   if ! assert_contains "$list_out" "${model_name}:UD-Q4_K_XL" || \
      assert_contains "$list_out" 'ATTRIBUTES' || \
-     assert_contains "$list_out" ':mtp-gemma-4-26B-A4B-it-qat'; then
+     assert_contains "$list_out" ':mtp-gemma-4-26B-A4B-it-qat-Q4_0'; then
     fail 'pull prefetches mtp sidecar' "expected model row without MTP sidecar row, got: $list_out"
     return
   fi

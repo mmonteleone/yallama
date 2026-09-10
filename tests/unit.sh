@@ -231,12 +231,12 @@ test_find_cached_gguf_files_ignores_mtp_sidecars() {
   local snapshot_dir="${cache_dir}/snapshots/abc123"
   mkdir -p "$snapshot_dir"
   touch "${snapshot_dir}/model-Q4_K_M.gguf"
-  touch "${snapshot_dir}/mtp-model.gguf"
+  touch "${snapshot_dir}/mtp-model-Q4_0.gguf"
 
   local result
   result="$(find_cached_gguf_files "$cache_dir")"
   if assert_contains "$result" "model-Q4_K_M.gguf" && \
-     ! assert_contains "$result" "mtp-model.gguf" 2>/dev/null; then
+     ! assert_contains "$result" "mtp-model-Q4_0.gguf" 2>/dev/null; then
     pass 'find_cached_gguf_files ignores mtp sidecars'
   else
     fail 'find_cached_gguf_files ignores mtp sidecars' "got: $result"

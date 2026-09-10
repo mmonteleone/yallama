@@ -377,14 +377,15 @@ _is_auxiliary_gguf_filename() {
   return 1
 }
 
-# Return success for MTP draft sidecars published as mtp-*.gguf.
+# Return success for MTP draft sidecars published as mtp-*.gguf, including
+# quantized names such as mtp-Qwen3.8-27B-Q4_0.gguf.
 _is_mtp_sidecar_gguf_filename() {
   local filename="$1"
   local stem="${filename%.gguf}"
   local lower
   lower="$(printf '%s' "$stem" | tr '[:upper:]' '[:lower:]')"
 
-  [[ "$lower" == mtp-* ]] && [[ "$(extract_quant_from_filename "$filename")" == "$stem" ]]
+  [[ "$lower" == mtp-* ]]
 }
 
 # List the distinct quant tags present in a model's cache directory.

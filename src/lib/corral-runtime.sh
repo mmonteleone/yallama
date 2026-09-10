@@ -1214,8 +1214,13 @@ _cmd_pull() {
 
   local pull_extra_args=()
   local requires_mtp_sidecar="false"
-  if [[ "$BACKEND" == "llama.cpp" ]] && _hf_model_has_mtp_sidecar "$model_name"; then
+  if [[ "$BACKEND" == "llama.cpp" ]] && _hf_model_mtp_sidecar_path "$model_name"; then
     pull_extra_args=(--spec-type draft-mtp --spec-draft-n-max 1)
+    # --hf-repo-draft REPO:QUANT selects a normal draft model with that
+    # quant. This repository also contains a root-level Q4_0 model, so use
+    # the exact nested MTP sidecar path instead of letting llama.cpp select
+    # the draft by quant.
+    pull_extra_args+=(--hf-repo-draft "$model_name" --spec-draft-model "$REPLY_MTP_SIDECAR_PATH")
     requires_mtp_sidecar="true"
   fi
 
@@ -1242,7 +1247,7 @@ _cmd_pull() {
   # llama-cli downloads into the HF cache and exits instead of entering chat
   # mode on models that advertise a chat template by default.
   # Invoke llama-cli just long enough to warm the HF cache, then exit:
-  # --no-conversation --single-turn: one-shot mode so the process exits after one pass.
+  # --single-turn: one-shot mode so the process exits after one pass.
   # --prompt ' ': a single space avoids the "no prompt" error raised by some models.
   # --no-display-prompt: suppress the placeholder prompt from being printed.
   # -n 0: predict zero tokens so llama-cli exits immediately after model loading.
@@ -1256,11 +1261,14 @@ _cmd_pull() {
   local pull_status=0
   llama-cli -hf "$model_spec" "${hf_args[@]+"${hf_args[@]}"}" \
     "${pull_extra_args[@]+"${pull_extra_args[@]}"}" \
-    --no-conversation --single-turn --prompt ' ' --no-display-prompt -n 0 </dev/null || pull_status=$?
+    --single-turn --prompt ' ' --no-display-prompt -n 0 </dev/null || pull_status=$?
 
   if cache_has_model_or_quant "$cache_dir" "$quant"; then
     if [[ -n "$quant" ]]; then
       _cleanup_unrequested_quant_pull_ggufs "$cache_dir" "$quant" "$preexisting_gguf_paths"
+    fi
+    if [[ "$requires_mtp_sidecar" == "true" ]] && ! _cache_dir_has_mtp_sidecar "$cache_dir"; then
+      _download_hf_mtp_sidecar "$model_name" "$REPLY_MTP_SIDECAR_PATH" "$cache_dir" || true
     fi
     if [[ "$requires_mtp_sidecar" == "true" ]] && ! _cache_dir_has_mtp_sidecar "$cache_dir"; then
       die "pull did not download required MTP sidecar for '${model_spec}' (cache dir: ${cache_dir})"
@@ -1318,23 +1326,86 @@ _fetch_hf_model_metadata() {
     "https://huggingface.co/api/models/${model_name}" 2>/dev/null
 }
 
-# Return success if the Hugging Face metadata for a model advertises an MTP
-# draft sidecar. This is used to decide whether pull should prewarm draft args.
-_hf_model_has_mtp_sidecar() {
+# Download an MTP sidecar directly when llama.cpp cannot resolve a nested
+# sidecar path such as MTP/mtp-model-Q4_0.gguf. The file is placed in the
+# existing snapshot so the normal cache discovery path sees it.
+_download_hf_mtp_sidecar() {
+  local model_name="$1"
+  local sidecar_path="$2"
+  local cache_dir="$3"
+  [[ "$model_name" == */* && -n "$sidecar_path" && -d "$cache_dir" ]] || return 1
+  [[ "$sidecar_path" != /* && "$sidecar_path" != *".."* ]] || return 1
+  command -v curl >/dev/null 2>&1 || return 1
+
+  local snapshot_dir=""
+  local candidate
+  for candidate in "$cache_dir"/snapshots/*/; do
+    [[ -d "$candidate" ]] || continue
+    snapshot_dir="$candidate"
+    break
+  done
+  [[ -n "$snapshot_dir" ]] || return 1
+
+  local target_path="${snapshot_dir%/}/${sidecar_path}"
+  if [[ -f "$target_path" || -L "$target_path" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$target_path")" || return 1
+
+  local temp_path="${target_path}.corral-part.$$"
+  local hf_token="${HF_TOKEN:-${HF_HUB_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}}"
+  local auth_header=()
+  [[ -n "$hf_token" ]] && auth_header=(-H "Authorization: Bearer ${hf_token}")
+
+  echo "Downloading MTP sidecar: ${sidecar_path}"
+  if ! curl -fL \
+    --connect-timeout 15 \
+    --retry 3 \
+    --retry-delay 2 \
+    "${auth_header[@]+"${auth_header[@]}"}" \
+    "https://huggingface.co/${model_name}/resolve/main/${sidecar_path}" \
+    -o "$temp_path"; then
+    rm -f "$temp_path"
+    return 1
+  fi
+
+  mv "$temp_path" "$target_path"
+}
+
+# Populate REPLY_MTP_SIDECAR_PATH with the first MTP draft sidecar advertised
+# by Hugging Face metadata.
+_hf_model_mtp_sidecar_path() {
   local model_name="$1"
   [[ "$model_name" == */* ]] || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
+  REPLY_MTP_SIDECAR_PATH=""
+
   local metadata
   metadata="$(_fetch_hf_model_metadata "$model_name" || return 1)"
 
-  jq -e '
-    any((.siblings // [])[]?; (
-      (.rfilename // "" | ascii_downcase) as $name
-      | ($name | startswith("mtp-") or contains("/mtp-") or contains("draft-mtp"))
-      and ($name | endswith(".gguf"))
-    ))
-  ' >/dev/null 2>&1 <<<"$metadata"
+  local sidecar_path
+  sidecar_path="$(jq -r '
+    first(
+      (.siblings // [])[]?
+      | (.rfilename // "")
+      | select(
+          (((ascii_downcase | startswith("mtp-")) or
+            (ascii_downcase | contains("/mtp-")) or
+            (ascii_downcase | contains("draft-mtp"))) and
+           (ascii_downcase | endswith(".gguf")))
+        )
+    ) // empty
+  ' <<<"$metadata")"
+  [[ -n "$sidecar_path" ]] || return 1
+  REPLY_MTP_SIDECAR_PATH="$sidecar_path"
+}
+
+# Return success if the Hugging Face metadata for a model advertises an MTP
+# draft sidecar. Kept as a small compatibility wrapper for sourced callers.
+_hf_model_has_mtp_sidecar() {
+  _hf_model_mtp_sidecar_path "$1"
 }
 
 # Infer a backend hint from Hugging Face model metadata.
