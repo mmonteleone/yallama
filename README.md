@@ -62,7 +62,7 @@ corral profile coder unsloth/gemma-4-26B-A4B-it-qat-GGUF:UD-Q4_K_XL -- \
 corral serve coder
 
 # Or seed a profile from a built-in template
-corral profile gemma-coder gemma-4
+corral profile gemma-coder gemma
 corral serve gemma-coder
 
 # Launch supported coding harnesses against a running server
@@ -157,21 +157,22 @@ corral run coder -- --temp 0.5   # inline flags override profile flags
 
 A **template** is a reusable set of flags that can seed profiles. Corral currently includes a few built-in:
 
-- general
-- code
-- gemma-4
-- qwen-3-general
-- qwen-3-code
-- gpt-oss
+- gemma
+- glimmer
+- qwen
 
 ```sh
-# Create a profile from the built-in qwen-3-code template
-corral profile qwen-coder qwen-3-code
+# Create a profile from the built-in qwen template
+corral profile qwen-coder qwen
 corral serve qwen-coder
 
 # Override to a specific model/quant
-corral profile qwen-coder qwen-3-code unsloth/Qwen3.8-27B-GGUF:Q4_K_M
+corral profile qwen-coder qwen unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
 corral serve qwen-coder
+
+# Create a profile from the built-in glimmer template
+corral profile glimmer-chat glimmer
+corral serve glimmer-chat
 ```
 
 Create custom templates with `corral template`. If a template includes a `model=` line, the model is optional when creating profiles from it:

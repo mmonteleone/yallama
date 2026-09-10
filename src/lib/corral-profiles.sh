@@ -186,7 +186,7 @@ Use a profile name instead of a model spec with 'run' or 'serve':
   $SCRIPT_NAME serve coder
 
 Create/update a profile from a built-in template:
-  $SCRIPT_NAME profile mycoder code unsloth/Qwen3.8-27B-GGUF:Q4_K_M
+  $SCRIPT_NAME profile myqwen qwen unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_M
 EOF
 }
 
