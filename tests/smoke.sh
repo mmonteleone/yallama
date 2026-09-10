@@ -1146,12 +1146,10 @@ EOF
 
   local args_out
   args_out="$(cat "$args_log")"
-  if ! assert_contains "$args_out" '--spec-type draft-mtp' || \
-     ! assert_contains "$args_out" '--spec-draft-n-max 1' || \
-     ! assert_contains "$args_out" '--hf-repo-draft demo/gemma-4-26B-A4B-it-qat-GGUF' || \
-     ! assert_contains "$args_out" '--spec-draft-model MTP/mtp-gemma-4-26B-A4B-it-qat-Q4_0.gguf' || \
-     assert_contains "$args_out" '--hf-repo-draft demo/gemma-4-26B-A4B-it-qat-GGUF:Q4_0'; then
-    fail 'pull prefetches mtp sidecar' "expected draft-mtp args, got: $args_out"
+  if assert_contains "$args_out" '--spec-type draft-mtp' || \
+     assert_contains "$args_out" '--hf-repo-draft' || \
+     assert_contains "$args_out" '--spec-draft-model'; then
+    fail 'pull prefetches mtp sidecar' "pull should fetch the primary model without MTP flags, got: $args_out"
     return
   fi
 
@@ -1176,6 +1174,71 @@ EOF
   fi
 
   pass 'pull prefetches mtp sidecar'
+}
+
+test_pull_prefers_root_mtp_sidecar() {
+  local install_root="${HOME}/install-root"
+  local current_link="${install_root}/current"
+  local stdout_file="${TEST_DIR}/stdout"
+  local stderr_file="${TEST_DIR}/stderr"
+  local args_log="${TEST_DIR}/llama-cli-args.log"
+  local model_spec='demo/root-mtp-GGUF:Q4_K_M'
+  local model_name='demo/root-mtp-GGUF'
+  local expected_cache_dir="${HOME}/.cache/huggingface/hub/models--demo--root-mtp-GGUF"
+  local mtp_fixture="${TEST_DIR}/mtp-sidecar.gguf"
+
+  write_mock_uname "${TEST_DIR}/bin/uname" "Darwin" "arm64"
+  mkdir -p "$current_link" "$(dirname "$expected_cache_dir")"
+  : >"$args_log"
+
+  cat >"${CORRAL_TEST_FIXTURES_DIR}/hf-model-demo--root-mtp-GGUF.json" <<'EOF'
+{
+  "id": "demo/root-mtp-GGUF",
+  "tags": ["gguf"],
+  "siblings": [
+    {"rfilename": "MTP/mtp-root-mtp-BF16.gguf"},
+    {"rfilename": "mtp-root-mtp.gguf"},
+    {"rfilename": "root-mtp-Q4_K_M.gguf"}
+  ]
+}
+EOF
+
+  printf 'mock MTP sidecar\n' >"$mtp_fixture"
+
+  cat >"${current_link}/llama-cli" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >"$CORRAL_LLAMA_CLI_ARGS_LOG"
+mkdir -p "$CORRAL_EXPECTED_CACHE_DIR/snapshots/def456"
+: >"$CORRAL_EXPECTED_CACHE_DIR/snapshots/def456/root-mtp-Q4_K_M.gguf"
+exit 0
+EOF
+  chmod +x "${current_link}/llama-cli"
+
+  export CORRAL_INSTALL_ROOT="$install_root"
+  export CORRAL_EXPECTED_CACHE_DIR="$expected_cache_dir"
+  export CORRAL_LLAMA_CLI_ARGS_LOG="$args_log"
+  export CORRAL_MTP_SIDECAR_FIXTURE="$mtp_fixture"
+
+  run_cmd "$stdout_file" "$stderr_file" bash "$SCRIPT_PATH" pull "$model_spec"
+
+  if [[ $RUN_STATUS -ne 0 ]]; then
+    fail 'pull prefers root MTP sidecar' "pull failed: $(cat "$stderr_file")"
+    return
+  fi
+
+  if [[ ! -f "$expected_cache_dir/snapshots/def456/mtp-root-mtp.gguf" ]]; then
+    fail 'pull prefers root MTP sidecar' 'expected the root-level MTP sidecar to be downloaded'
+    return
+  fi
+
+  if [[ -f "$expected_cache_dir/snapshots/def456/MTP/mtp-root-mtp-BF16.gguf" ]]; then
+    fail 'pull prefers root MTP sidecar' 'did not expect the nested MTP sidecar to be selected'
+    return
+  fi
+
+  pass 'pull prefers root MTP sidecar'
 }
 
 test_pull_model_before_backend_flag() {
@@ -6007,6 +6070,9 @@ main() {
 
     setup_test_env
     test_pull_prefetches_mtp_sidecar_and_hides_sidecar_row
+
+    setup_test_env
+    test_pull_prefers_root_mtp_sidecar
 
     setup_test_env
     test_pull_model_before_backend_flag

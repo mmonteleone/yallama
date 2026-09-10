@@ -1212,15 +1212,14 @@ _cmd_pull() {
   local cache_dir
   cache_dir="$(model_name_to_cache_dir "$model_name")"
 
-  local pull_extra_args=()
   local requires_mtp_sidecar="false"
+  local mtp_sidecar_path=""
   if [[ "$BACKEND" == "llama.cpp" ]] && _hf_model_mtp_sidecar_path "$model_name"; then
-    pull_extra_args=(--spec-type draft-mtp --spec-draft-n-max 1)
-    # --hf-repo-draft REPO:QUANT selects a normal draft model with that
-    # quant. This repository also contains a root-level Q4_0 model, so use
-    # the exact nested MTP sidecar path instead of letting llama.cpp select
-    # the draft by quant.
-    pull_extra_args+=(--hf-repo-draft "$model_name" --spec-draft-model "$REPLY_MTP_SIDECAR_PATH")
+    # llama-cli can download an MTP drafter before resolving the primary
+    # --hf model, then fail with "--model is required". Pull the primary
+    # model normally and fetch the advertised drafter after its snapshot
+    # exists instead.
+    mtp_sidecar_path="$REPLY_MTP_SIDECAR_PATH"
     requires_mtp_sidecar="true"
   fi
 
@@ -1228,7 +1227,7 @@ _cmd_pull() {
   require_cmds llama-cli
 
   if cache_has_model_or_quant "$cache_dir" "$quant"; then
-    if [[ "$requires_mtp_sidecar" == "true" ]] && ! _cache_dir_has_mtp_sidecar "$cache_dir"; then
+    if [[ "$requires_mtp_sidecar" == "true" ]] && ! _cache_dir_has_mtp_sidecar "$cache_dir" "$mtp_sidecar_path"; then
       :
     else
       echo "Model already cached: $model_spec"
@@ -1260,17 +1259,16 @@ _cmd_pull() {
   # provide a more helpful error message.
   local pull_status=0
   llama-cli -hf "$model_spec" "${hf_args[@]+"${hf_args[@]}"}" \
-    "${pull_extra_args[@]+"${pull_extra_args[@]}"}" \
     --single-turn --prompt ' ' --no-display-prompt -n 0 </dev/null || pull_status=$?
 
   if cache_has_model_or_quant "$cache_dir" "$quant"; then
     if [[ -n "$quant" ]]; then
       _cleanup_unrequested_quant_pull_ggufs "$cache_dir" "$quant" "$preexisting_gguf_paths"
     fi
-    if [[ "$requires_mtp_sidecar" == "true" ]] && ! _cache_dir_has_mtp_sidecar "$cache_dir"; then
-      _download_hf_mtp_sidecar "$model_name" "$REPLY_MTP_SIDECAR_PATH" "$cache_dir" || true
+    if [[ "$requires_mtp_sidecar" == "true" ]] && ! _cache_dir_has_mtp_sidecar "$cache_dir" "$mtp_sidecar_path"; then
+      _download_hf_mtp_sidecar "$model_name" "$mtp_sidecar_path" "$cache_dir" || true
     fi
-    if [[ "$requires_mtp_sidecar" == "true" ]] && ! _cache_dir_has_mtp_sidecar "$cache_dir"; then
+    if [[ "$requires_mtp_sidecar" == "true" ]] && ! _cache_dir_has_mtp_sidecar "$cache_dir" "$mtp_sidecar_path"; then
       die "pull did not download required MTP sidecar for '${model_spec}' (cache dir: ${cache_dir})"
     fi
     echo "Done: $model_spec"
@@ -1291,6 +1289,7 @@ _cmd_pull() {
 # Return success if the cache already includes an auxiliary MTP sidecar.
 _cache_dir_has_mtp_sidecar() {
   local cache_dir="$1"
+  local sidecar_path="${2:-}"
   local snapshot_dir
   local path
 
@@ -1298,6 +1297,9 @@ _cache_dir_has_mtp_sidecar() {
     [[ -d "$snapshot_dir" ]] || continue
     while IFS= read -r path; do
       [[ -z "$path" ]] && continue
+      if [[ -n "$sidecar_path" && "$path" != "${snapshot_dir%/}/${sidecar_path}" ]]; then
+        continue
+      fi
       if _is_mtp_sidecar_gguf_filename "$(basename "$path")"; then
         return 0
       fi
@@ -1373,8 +1375,10 @@ _download_hf_mtp_sidecar() {
   mv "$temp_path" "$target_path"
 }
 
-# Populate REPLY_MTP_SIDECAR_PATH with the first MTP draft sidecar advertised
-# by Hugging Face metadata.
+# Populate REPLY_MTP_SIDECAR_PATH with the preferred MTP draft sidecar
+# advertised by Hugging Face metadata. llama.cpp auto-discovers a root-level
+# mtp-*.gguf file from the primary --hf repository, so prefer that over the
+# higher-precision files commonly kept under MTP/.
 _hf_model_mtp_sidecar_path() {
   local model_name="$1"
   [[ "$model_name" == */* ]] || return 1
@@ -1391,8 +1395,14 @@ _hf_model_mtp_sidecar_path() {
       (.siblings // [])[]?
       | (.rfilename // "")
       | select(
-          (((ascii_downcase | startswith("mtp-")) or
-            (ascii_downcase | contains("/mtp-")) or
+          (ascii_downcase | startswith("mtp-")) and
+          (ascii_downcase | endswith(".gguf"))
+        )
+    ) // first(
+      (.siblings // [])[]?
+      | (.rfilename // "")
+      | select(
+          (((ascii_downcase | contains("/mtp-")) or
             (ascii_downcase | contains("draft-mtp"))) and
            (ascii_downcase | endswith(".gguf")))
         )
